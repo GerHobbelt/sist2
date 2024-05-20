@@ -44,20 +44,28 @@ services:
   elasticsearch:
     image: elasticsearch:7.17.9
     restart: unless-stopped
+    volumes:
+      # This directory must have 1000:1000 permissions (or update PUID & PGID below)
+      - /data/sist2-es-data/:/usr/share/elasticsearch/data
     environment:
       - "discovery.type=single-node"
       - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - "PUID=1000"
+      - "PGID=1000"
   sist2-admin:
-    image: simon987/sist2:3.3.4-x64-linux
+    image: simon987/sist2:3.4.0-x64-linux
     restart: unless-stopped
     volumes:
-      - ./sist2-admin-data/:/sist2-admin/
+      - /data/sist2-admin-data/:/sist2-admin/
       - /:/host
     ports:
-      - 4090:4090 # sist2
-      - 8080:8080 # sist2-admin
+      - 4090:4090
+      # NOTE: Don't expose this port publicly!
+      - 8080:8080
     working_dir: /root/sist2-admin/
-    entrypoint: python3 /root/sist2-admin/sist2_admin/app.py
+    entrypoint: python3
+    command:
+      - /root/sist2-admin/sist2_admin/app.py
 ```
 
 Navigate to http://localhost:8080/ to configure sist2-admin.
@@ -208,7 +216,7 @@ docker run --rm --entrypoint cat my-sist2-image /root/sist2 > sist2-x64-linux
 3. Install vcpkg dependencies
 
     ```bash
-    vcpkg install openblas curl[core,openssl] sqlite3[core,fts5] cpp-jwt pcre cjson brotli libarchive[core,bzip2,libxml2,lz4,lzma,lzo] pthread tesseract libxml2 libmupdf[ocr] gtest mongoose libmagic libraw gumbo ffmpeg[core,avcodec,avformat,swscale,swresample,webp,opus,mp3lame,vpx,zlib]
+    vcpkg install openblas curl[core,openssl] sqlite3[core,fts5,json1] cpp-jwt pcre cjson brotli libarchive[core,bzip2,libxml2,lz4,lzma,lzo] pthread tesseract libxml2 libmupdf[ocr] gtest mongoose libmagic libraw gumbo ffmpeg[core,avcodec,avformat,swscale,swresample,webp,opus,mp3lame,vpx,zlib]
     ```
 
 4. Build

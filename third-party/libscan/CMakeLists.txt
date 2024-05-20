@@ -106,12 +106,32 @@ find_library(MUPDF_LIB NAMES liblibmupdf.a)
 find_library(CMS_LIB NAMES lcms2)
 find_library(JAS_LIB NAMES jasper)
 find_library(GUMBO_LIB NAMES gumbo)
-find_library(GOMP_LIB NAMES libgomp.a gomp PATHS /usr/lib/gcc/x86_64-linux-gnu/11/ /usr/lib/gcc/x86_64-linux-gnu/5/ /usr/lib/gcc/x86_64-linux-gnu/9/ /usr/lib/gcc/x86_64-linux-gnu/10/ /usr/lib/gcc/aarch64-linux-gnu/7/ /usr/lib/gcc/aarch64-linux-gnu/9/ /usr/lib/gcc/x86_64-linux-gnu/7/ /usr/lib/gcc/aarch64-linux-gnu/11/ /usr/lib/gcc/x86_64-linux-gnu/8/ /usr/lib/gcc/aarch64-linux-gnu/8/)
+find_library(GOMP_LIB NAMES libgomp.a gomp
+        PATHS
+        /usr/lib/gcc/x86_64-linux-gnu/5/
+        /usr/lib/gcc/x86_64-linux-gnu/6/
+        /usr/lib/gcc/x86_64-linux-gnu/7/
+        /usr/lib/gcc/x86_64-linux-gnu/8/
+        /usr/lib/gcc/x86_64-linux-gnu/9/
+        /usr/lib/gcc/x86_64-linux-gnu/10/
+        /usr/lib/gcc/x86_64-linux-gnu/11/
+        /usr/lib/gcc/x86_64-linux-gnu/12/
+
+        /usr/lib/gcc/aarch64-linux-gnu/5/
+        /usr/lib/gcc/aarch64-linux-gnu/6/
+        /usr/lib/gcc/aarch64-linux-gnu/7/
+        /usr/lib/gcc/aarch64-linux-gnu/8/
+        /usr/lib/gcc/aarch64-linux-gnu/9/
+        /usr/lib/gcc/aarch64-linux-gnu/10/
+        /usr/lib/gcc/aarch64-linux-gnu/11/
+        /usr/lib/gcc/aarch64-linux-gnu/12/
+)
 find_package(Leptonica CONFIG REQUIRED)
-find_package(FFMPEG REQUIRED)
 find_package(libraw CONFIG REQUIRED)
 find_package(Freetype REQUIRED)
 
+find_package(FFMPEG REQUIRED)
+list(REMOVE_ITEM FFMPEG_LIBRARIES /usr/lib/x86_64-linux-gnu/libm.a)
 
 target_compile_options(
         scan
@@ -166,7 +186,6 @@ target_link_libraries(
         ${WPD_LIB_DIR}/libwpd-0.9.a
         ${WPD_LIB_DIR}/libwpd-stream-0.9.a
 
-        ${FREETYPE_LIB}
         ${HARFBUZZ_LIB}
         ${JBIG2DEC_LIB}
 
