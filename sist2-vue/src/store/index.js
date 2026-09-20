@@ -174,7 +174,7 @@ export default new Vuex.Store({
         setOptFragmentSize: (state, val) => state.optFragmentSize = val,
         setOptFragmentCount: (state, val) => state.optFragmentCount = val,
         setOptQueryMode: (state, val) => state.optQueryMode = val,
-        setOptResultSize: (state, val) => state.optSize = val,
+        setOptResultSize: (state, val) => state.optSize = Number(val),
         setOptTagOrOperator: (state, val) => state.optTagOrOperator = val,
         setOptFeaturedFields: (state, val) => state.optFeaturedFields = val,
 
@@ -328,7 +328,8 @@ export default new Vuex.Store({
                 // default instead of turning into undefined
                 Object.keys(state).forEach((key) => {
                     if (key.startsWith("opt") && key in conf) {
-                        (state)[key] = conf[key];
+                        // A number option stays a number: the backend rejects a stringified one
+                        (state)[key] = typeof (state)[key] === "number" ? Number(conf[key]) : conf[key];
                     }
                 });
             }
