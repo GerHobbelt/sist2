@@ -21,18 +21,18 @@ static char *web_address_to_string(struct mg_addr *addr) {
     if (addr->is_ip6) {
         snprintf(address_to_string_buf, sizeof(address_to_string_buf),
             "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-                addr->ip[0], addr->ip[1],
-                addr->ip[2], addr->ip[3],
-                addr->ip[4], addr->ip[5],
-                addr->ip[6], addr->ip[7],
-                addr->ip[8], addr->ip[9],
-                addr->ip[10], addr->ip[11],
-                addr->ip[12], addr->ip[13],
-                addr->ip[14], addr->ip[15]);
+                addr->addr.ip[0], addr->addr.ip[1],
+                addr->addr.ip[2], addr->addr.ip[3],
+                addr->addr.ip[4], addr->addr.ip[5],
+                addr->addr.ip[6], addr->addr.ip[7],
+                addr->addr.ip[8], addr->addr.ip[9],
+                addr->addr.ip[10], addr->addr.ip[11],
+                addr->addr.ip[12], addr->addr.ip[13],
+                addr->addr.ip[14], addr->addr.ip[15]);
     } else {
         snprintf(address_to_string_buf, sizeof(address_to_string_buf),
                  "%d.%d.%d.%d",
-                 addr->ip[0], addr->ip[1], addr->ip[2], addr->ip[3]);
+                 addr->addr.ip[0], addr->addr.ip[1], addr->addr.ip[2], addr->addr.ip[3]);
     }
 
     return address_to_string_buf;
@@ -45,7 +45,6 @@ void web_serve_asset_index_js(struct mg_connection *nc);
 void web_serve_asset_chunk_vendors_js(struct mg_connection *nc);
 void web_serve_asset_favicon_ico(struct mg_connection *nc);
 void web_serve_asset_style_css(struct mg_connection *nc);
-void web_serve_asset_chunk_vendors_css(struct mg_connection *nc);
 
 cJSON *web_get_json_body(struct mg_http_message *hm);
 char *web_get_string_body(struct mg_http_message *hm);

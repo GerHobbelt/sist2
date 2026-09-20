@@ -3,7 +3,12 @@
 
 #include "web.h"
 
-#include "static_generated.c"
+#include "src/embed.h"
+
+EMBED_FILE(mappings_json, SIST2_ROOT "/schema/mappings.json");
+EMBED_FILE(settings_json, SIST2_ROOT "/schema/settings.json");
+EMBED_FILE(settings_legacy_json, SIST2_ROOT "/schema/settings_legacy.json");
+EMBED_FILE(pipeline_json, SIST2_ROOT "/schema/pipeline.json");
 
 
 typedef struct es_indexer {
@@ -65,16 +70,14 @@ void print_json(cJSON *document, const char id_str[SIST_SID_LEN]) {
 }
 
 void delete_document(const char *sid) {
-    es_bulk_line_t bulk_line;
+    es_bulk_line_t *bulk_line = malloc(sizeof(es_bulk_line_t));
 
-    bulk_line.type = ES_BULK_LINE_DELETE;
-    bulk_line.next = NULL;
-    strcpy(bulk_line.sid, sid);
+    bulk_line->type = ES_BULK_LINE_DELETE;
+    bulk_line->next = NULL;
+    strcpy(bulk_line->sid, sid);
 
-    tpool_add_work(IndexCtx.pool, &(job_t) {
-            .type = JOB_BULK_LINE,
-            .bulk_line = &bulk_line,
-    });
+    // The pool takes ownership of the line
+    thread_pool_submit(IndexCtx.pool, bulk_line);
 }
 
 
@@ -91,11 +94,9 @@ void index_json(cJSON *document, const char doc_id[SIST_SID_LEN]) {
     bulk_line->next = NULL;
 
     cJSON_free(json);
-    tpool_add_work(IndexCtx.pool, &(job_t) {
-            .type = JOB_BULK_LINE,
-            .bulk_line = bulk_line,
-    });
-    free(bulk_line);
+
+    // The pool takes ownership of the line
+    thread_pool_submit(IndexCtx.pool, bulk_line);
 }
 
 void *create_bulk_buffer(int max, int *count, size_t *buf_len, int legacy) {
@@ -348,7 +349,7 @@ es_indexer_t *create_indexer(const char *url, const char *index) {
     return indexer;
 }
 
-void finish_indexer(int index_id) {
+void finish_indexer(UNUSED(int index_id)) {
 
     char url[4096];
 
@@ -429,7 +430,7 @@ void elastic_init(int force_reset, const char *user_mappings, const char *user_s
         LOG_FATAL("elastic.c", "This elasticsearch version is not supported!");
     }
 
-    char *settings = NULL;
+    const char *settings = NULL;
     if (IS_LEGACY_VERSION(es_version)) {
         settings = settings_legacy_json;
     } else {

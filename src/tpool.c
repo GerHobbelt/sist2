@@ -5,8 +5,11 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include "parsing/parse.h"
+#include "worker/sink.h"
 
 #define BLANK_STR "                                         "
+
+#define WORKER_STACK_SIZE (16 * 1024 * 1024)
 
 typedef struct {
     int thread_id;
@@ -132,6 +135,7 @@ static void worker_proc_init(tpool_t *pool, int thread_id) {
     pthread_mutex_unlock(&pool->shm->data_mutex);
 
     ProcData.thread_id = thread_id;
+    DocumentSink = &DatabaseSink;
 
     if (ScanCtx.index.path[0] != '\0') {
         ProcData.index_db = database_create(ScanCtx.index.path, INDEX_DATABASE);
@@ -146,7 +150,7 @@ static void worker_proc_init(tpool_t *pool, int thread_id) {
     pthread_mutex_unlock(&pool->shm->mutex);
 }
 
-void worker_proc_cleanup(tpool_t *pool) {
+void worker_proc_cleanup(UNUSED(tpool_t *pool)) {
     if (ProcData.index_db != NULL) {
         database_close(ProcData.index_db, FALSE);
     }
@@ -288,7 +292,7 @@ void tpool_destroy(tpool_t *pool) {
     pthread_cond_broadcast(&pool->shm->ipc_ctx.has_work_cond);
     pthread_mutex_unlock(&pool->shm->mutex);
 
-    for (size_t i = 0; i < pool->num_threads; i++) {
+    for (int i = 0; i < pool->num_threads; i++) {
         pthread_t thread = pool->threads[i];
         if (thread != 0) {
             void *_;
@@ -358,15 +362,22 @@ void tpool_start(tpool_t *pool) {
 
     pthread_mutex_lock(&pool->shm->mutex);
 
+    // Parsers run on the worker stack; musl's 128kB default is not enough
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, WORKER_STACK_SIZE);
+
     for (int i = 0; i < pool->num_threads; i++) {
 
         start_thread_arg_t *arg = malloc(sizeof(start_thread_arg_t));
         arg->thread_id = i + 1;
         arg->pool = pool;
 
-        pthread_create(&pool->threads[i], NULL, tpool_worker, arg);
+        pthread_create(&pool->threads[i], &attr, tpool_worker, arg);
         pool->start_thread_args[i] = arg;
     }
+
+    pthread_attr_destroy(&attr);
 
     // Only open the database when all workers are done initializing
     while (pool->shm->initialized_count != pool->num_threads) {

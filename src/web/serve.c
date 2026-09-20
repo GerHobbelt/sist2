@@ -78,7 +78,9 @@ void get_embedding(struct mg_connection *nc, struct mg_http_message *hm) {
 
 void stats_files(struct mg_connection *nc, struct mg_http_message *hm) {
 
-    if (hm->uri.len != 17) {
+    // /s/<index id: 8 hex chars>/<stat type mnemonic: 4 chars>
+    if (hm->uri.len != 3 + 8 + 1 + 4 || *(hm->uri.buf + 11) != '/') {
+        LOG_DEBUGF("serve.c", "Invalid stats path: %.*s", (int) hm->uri.len, hm->uri.buf);
         HTTP_REPLY_NOT_FOUND
         return;
     }
@@ -141,10 +143,6 @@ void serve_favicon_ico(struct mg_connection *nc, UNUSED(struct mg_http_message *
 
 void serve_style_css(struct mg_connection *nc, UNUSED(struct mg_http_message *hm)) {
     web_serve_asset_style_css(nc);
-}
-
-void serve_chunk_vendors_css(struct mg_connection *nc, UNUSED(struct mg_http_message *hm)) {
-    web_serve_asset_chunk_vendors_css(nc);
 }
 
 void serve_thumbnail(struct mg_connection *nc, UNUSED(struct mg_http_message *hm), int index_id,
@@ -233,7 +231,8 @@ void serve_file_from_url(cJSON *json, index_t *idx, struct mg_connection *nc) {
 
     const char *ext = cJSON_GetObjectItem(json, "extension")->valuestring;
 
-    char url[8192];
+    // rewrite_url[8192] + path_unescaped + '/' + name_unescaped + '.' + ext
+    char url[8192 + PATH_MAX * 6];
     snprintf(url, sizeof(url),
              "%s%s/%s%s%s",
              idx->desc.rewrite_url, path_unescaped, name_unescaped, strlen(ext) == 0 ? "" : ".", ext);
@@ -266,8 +265,9 @@ void serve_file_from_disk(cJSON *json, index_t *idx, struct mg_connection *nc, s
     char path_unescaped[PATH_MAX * 3];
     str_unescape(path_unescaped, path);
 
-    char full_path[PATH_MAX];
-    snprintf(full_path, PATH_MAX, "%s%s%s%s%s%s",
+    // root[PATH_MAX] + path_unescaped + '/' + name_unescaped + '.' + ext
+    char full_path[PATH_MAX * 7];
+    snprintf(full_path, sizeof(full_path), "%s%s%s%s%s%s",
              idx->desc.root, path_unescaped, strlen(path_unescaped) == 0 ? "" : "/",
              name_unescaped, strlen(ext) == 0 ? "" : ".", ext);
 
@@ -279,7 +279,7 @@ void serve_file_from_disk(cJSON *json, index_t *idx, struct mg_connection *nc, s
              "Accept-Ranges: bytes\r\nCache-Control: no-store\r\n",
              name, strlen(ext) == 0 ? "" : ".", ext);
 
-    char mime_mapping[8192];
+    char mime_mapping[sizeof(full_path) + 8192];
     if (strlen(ext) == 0) {
         snprintf(mime_mapping, sizeof(mime_mapping), "%s=%s%s",
                  full_path, mime, STR_STARTS_WITH_CONSTANT(mime, "text/") ? "; charset=utf8" : "");
@@ -659,9 +659,6 @@ static void ev_router(struct mg_connection *nc, int ev, void *ev_data) {
             return;
         } else if (mg_http_match_uri(hm, "/css/index.css")) {
             serve_style_css(nc, hm);
-            return;
-        } else if (mg_http_match_uri(hm, "/css/chunk-vendors.css")) {
-            serve_chunk_vendors_css(nc, hm);
             return;
         } else if (mg_http_match_uri(hm, "/js/index.js")) {
             serve_index_js(nc, hm);

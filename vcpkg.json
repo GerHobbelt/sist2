@@ -1,9 +1,17 @@
 {
   "name": "sist2",
-  "version-string": "3.5.0",
-  "builtin-baseline": "cfc7e5ec0383adbdac6595f29a5232049fe124df",
+  "version-string": "4.0.0",
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
+  "vcpkg-configuration": {
+    "overlay-ports": ["./overlay-ports"]
+  },
   "dependencies": [
     "openblas",
+    "antiword",
+    "libmobi",
+    "libwpd",
+    "utf8h",
+    "libuv",
     {
       "name": "curl",
       "default-features": false,
@@ -21,7 +29,7 @@
     {
       "name": "libarchive",
       "default-features": false,
-      "features": ["bzip2", "libxml2", "lz4", "lzma", "lzo"]
+      "features": ["bzip2", "lz4", "lzma", "lzo", "xar"]
     },
     "pthread",
     "tesseract",

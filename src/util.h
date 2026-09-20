@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "third-party/utf8.h/utf8.h"
+#include <utf8h/utf8.h>
 #include "libscan/scan.h"
 #include "types.h"
 #include <openssl/evp.h>
@@ -30,7 +30,7 @@ void str_escape(char *dst, const char *str);
 
 void str_unescape(char *dst, const char *str);
 
-static int hex2buf(const char *str, int len, unsigned char *bytes) {
+static inline int hex2buf(const char *str, int len, unsigned char *bytes) {
     static const uint8_t hashmap[] = {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -114,7 +114,7 @@ struct timespec timespec_add(struct timespec ts1, long usec);
 #define format_sid(out, index_id, doc_id) \
     sprintf((out), "%08x.%08x", (index_id), (doc_id))
 
-static int parse_sid(sist_id_t *sid, const char doc_sid_str[SIST_SID_LEN]) {
+static inline int parse_sid(sist_id_t *sid, const char doc_sid_str[SIST_SID_LEN]) {
     if (doc_sid_str[8] != '.') {
         return FALSE;
     }

@@ -51,7 +51,6 @@ application/vnd.fdf, fdf
 application/vnd.font-fontforge-sfd, sfd
 application/vnd.hp-hpgl, hgl|hpg|hpgl
 application/vnd.iccprofile, icm
-application/vnd.iccprofile, icm
 application/vnd.lotus-1-2-3,
 application/vnd.ms-cab-compressed, cab
 application/vnd.ms-excel, xlb|xlc|xll|xlm|xls|xlw
@@ -211,7 +210,8 @@ application/x-shar, shar
 application/x-shockwave-flash, swf
 application/x-snappy-framed,
 application/x-sprite, spr|sprite
-application/x-sqlite3,
+application/x-sqlite3, sqlite
+application/vnd.sqlite3,
 application/x-stargallery-thm,
 application/x-stuffit, sit
 application/x-sv4cpio, sv4cpio

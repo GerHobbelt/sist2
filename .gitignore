@@ -12,18 +12,15 @@ LOG
 sist2*
 !sist2-vue/
 !sist2-admin
-!sist2_admin
-!sist2.py
+!sist2-admin/server/sist2.js
 *.sist2/
 bundle*.css
 bundle.js
 *.a
 vgcore.*
 build/
-third-party/argparse
 *.idx/
 VERSION
-git_hash.h
 Testing/
 test_i
 test_i_inc
@@ -32,6 +29,10 @@ node_modules/
 i_inc/
 state.db
 *.pyc
+third-party/ext_*
+scan_test
+scan_*_test
+libscan.so
 !sist2-admin/frontend/dist
 *.js.map
 sist2-vue/dist
@@ -49,3 +50,4 @@ src/index/static_generated.c
 *.fts
 /*.md
 vcpkg_installed/
+sist2-admin/data/

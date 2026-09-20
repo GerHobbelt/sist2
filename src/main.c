@@ -12,6 +12,7 @@
 #include "parsing/mime.h"
 #include "parsing/parse.h"
 #include "ignorelist.h"
+#include "worker/worker.h"
 
 #include <signal.h>
 #include <pthread.h>
@@ -205,10 +206,10 @@ void initialize_scan_context(scan_args_t *args) {
     ScanCtx.threads = args->threads;
     ScanCtx.depth = args->depth;
 
-    strncpy(ScanCtx.index.path, args->output, sizeof(ScanCtx.index.path));
-    strncpy(ScanCtx.index.desc.name, args->name, sizeof(ScanCtx.index.desc.name));
-    strncpy(ScanCtx.index.desc.root, args->path, sizeof(ScanCtx.index.desc.root));
-    strncpy(ScanCtx.index.desc.rewrite_url, args->rewrite_url, sizeof(ScanCtx.index.desc.rewrite_url));
+    strncpy(ScanCtx.index.path, args->output, sizeof(ScanCtx.index.path) - 1);
+    strncpy(ScanCtx.index.desc.name, args->name, sizeof(ScanCtx.index.desc.name) - 1);
+    strncpy(ScanCtx.index.desc.root, args->path, sizeof(ScanCtx.index.desc.root) - 1);
+    strncpy(ScanCtx.index.desc.rewrite_url, args->rewrite_url, sizeof(ScanCtx.index.desc.rewrite_url) - 1);
     ScanCtx.index.desc.root_len = (short) strlen(ScanCtx.index.desc.root);
     ScanCtx.fast = args->fast;
 
@@ -235,6 +236,11 @@ void initialize_scan_context(scan_args_t *args) {
 
 void sist2_scan(scan_args_t *args) {
     initialize_scan_context(args);
+
+    if (args->worker) {
+        worker_run();
+        return;
+    }
 
     database_scan_begin(args);
 
@@ -279,6 +285,16 @@ void sist2_scan(scan_args_t *args) {
     ignorelist_destroy(ScanCtx.ignorelist);
 }
 
+// Elasticsearch bulk lines need no crash isolation, so `index` runs on plain worker threads.
+// The indexer is thread-local: each worker batches its own lines and flushes the tail on exit.
+static void index_bulk_line_job(void *job) {
+    elastic_index_line((es_bulk_line_t *) job);
+}
+
+static void index_thread_cleanup(UNUSED(int thread_id)) {
+    elastic_cleanup();
+}
+
 void sist2_index(index_args_t *args) {
     IndexCtx.es_url = args->es_url;
     IndexCtx.es_index = args->es_index;
@@ -301,8 +317,13 @@ void sist2_index(index_args_t *args) {
         LOG_FATALF("main.c", "Version mismatch! Index is %s but executable is %s", desc->version, Version);
     }
 
-    IndexCtx.pool = tpool_create(args->threads, args->print == FALSE);
-    tpool_start(IndexCtx.pool);
+    IndexCtx.pool = thread_pool_create((thread_pool_options_t) {
+            .thread_count = args->threads,
+            .print_progress = args->print == FALSE,
+            .job_func = index_bulk_line_job,
+            .on_thread_exit = index_thread_cleanup,
+    });
+    thread_pool_start(IndexCtx.pool);
 
     int cnt = 0;
 
@@ -339,8 +360,8 @@ void sist2_index(index_args_t *args) {
 
     database_close(db, FALSE);
 
-    tpool_wait(IndexCtx.pool);
-    tpool_destroy(IndexCtx.pool);
+    thread_pool_wait(IndexCtx.pool);
+    thread_pool_destroy(IndexCtx.pool);
 
     if (IndexCtx.needs_es_connection) {
         finish_indexer(desc->id);
@@ -508,6 +529,7 @@ int main(int argc, const char *argv[]) {
             OPT_BOOLEAN(0, "fast-epub", &scan_args->fast_epub,
                         "Faster but less accurate EPUB parsing (no thumbnails, metadata)."),
             OPT_BOOLEAN(0, "checksums", &scan_args->calculate_checksums, "Calculate file checksums when scanning."),
+            OPT_BOOLEAN(0, "worker", &scan_args->worker, "Internal: run as a worker process of a scan."),
             OPT_STRING(0, "list-file", &scan_args->list_path, "Specify a list of newline-delimited paths to be scanned"
                                                               " instead of normal directory traversal. Use '-' to read"
                                                               " from stdin."),
@@ -554,7 +576,7 @@ int main(int argc, const char *argv[]) {
             OPT_END(),
     };
 
-    struct argparse argparse = {};
+    struct argparse argparse = {0};
     argparse_init(&argparse, options, usage, 0);
     argparse_describe(
             &argparse,

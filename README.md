@@ -1,6 +1,6 @@
 ![GitHub](https://img.shields.io/github/license/sist2app/sist2.svg)
 [![CodeFactor](https://www.codefactor.io/repository/github/sist2app/sist2/badge?s=05daa325188aac4eae32c786f3d9cf4e0593f822)](https://www.codefactor.io/repository/github/sist2app/sist2)
-[![Development snapshots](https://ci.simon987.net/api/badges/simon987/sist2/status.svg)](https://files.simon987.net/.gate/sist2/simon987_sist2/)
+[![ci](https://github.com/sist2app/sist2/actions/workflows/ci.yml/badge.svg)](https://github.com/sist2app/sist2/actions/workflows/ci.yml)
 
 **Demo**: [sist2.simon987.net](https://sist2.simon987.net/)
 
@@ -26,12 +26,10 @@ sist2 (Simple incremental search tool)
 * Recursive scan inside archive files \*\*
 * OCR support with tesseract \*\*\*
 * Stats page & disk utilisation visualization
-* Named-entity recognition (client-side) \*\*\*\*
 
 \* See [format support](#format-support)    
 \*\* See [Archive files](#archive-files)    
-\*\*\* See [OCR](#ocr)    
-\*\*\*\* See [Named-Entity Recognition](#NER)
+\*\*\* See [OCR](#ocr)
 
 ## Getting Started
 
@@ -51,7 +49,7 @@ services:
       - "PUID=1000"
       - "PGID=1000"
   sist2-admin:
-    image: sist2app/sist2:x64-linux
+    image: sist2app/sist2:latest
     restart: unless-stopped
     volumes:
       - /data/sist2-admin-data/:/sist2-admin/
@@ -60,10 +58,9 @@ services:
       - 4090:4090
       # NOTE: Don't expose this port publicly!
       - 8080:8080
-    working_dir: /root/sist2-admin/
-    entrypoint: python3
+    entrypoint: node
     command:
-      - /root/sist2-admin/sist2_admin/app.py
+      - /root/sist2-admin/server/main.js
 ```
 
 Navigate to http://localhost:8080/ to configure sist2-admin.
@@ -98,20 +95,20 @@ Example usage:
 | File type                                                                 | Library                                                                      | Content  | Thumbnail   | Metadata                                                                                                                               |
 |:--------------------------------------------------------------------------|:-----------------------------------------------------------------------------|:---------|:------------|:---------------------------------------------------------------------------------------------------------------------------------------|
 | pdf,xps,fb2,epub                                                          | MuPDF                                                                        | text+ocr | yes         | author, title                                                                                                                          |
-| cbz,cbr                                                                   | [libscan](https://github.com/sist2app/sist2/tree/master/third-party/libscan) | -        | yes         | -                                                                                                                                      |
+| cbz,cbr                                                                   | [libscan](https://github.com/sist2app/sist2/tree/master/libscan) | -        | yes         | -                                                                                                                                      |
 | `audio/*`                                                                 | ffmpeg                                                                       | -        | yes         | ID3 tags                                                                                                                               |
 | `video/*`                                                                 | ffmpeg                                                                       | -        | yes         | title, comment, artist                                                                                                                 |
 | `image/*`                                                                 | ffmpeg                                                                       | ocr      | yes         | [Common EXIF tags](https://github.com/sist2app/sist2/blob/efdde2734eca9b14a54f84568863b7ffd59bdba3/src/parsing/media.c#L190), GPS tags |
 | raw, rw2, dng, cr2, crw, dcr, k25, kdc, mrw, pef, xf3, arw, sr2, srf, erf | LibRaw                                                                       | no       | yes         | Common EXIF tags, GPS tags                                                                                                             |
 | ttf,ttc,cff,woff,fnt,otf                                                  | Freetype2                                                                    | -        | yes, `bmp`  | Name & style                                                                                                                           |
-| `text/plain`                                                              | [libscan](https://github.com/sist2app/sist2/tree/master/third-party/libscan) | yes      | no          | -                                                                                                                                      |
-| html, xml                                                                 | [libscan](https://github.com/sist2app/sist2/tree/master/third-party/libscan) | yes      | no          | -                                                                                                                                      |
+| `text/plain`                                                              | [libscan](https://github.com/sist2app/sist2/tree/master/libscan) | yes      | no          | -                                                                                                                                      |
+| html, xml                                                                 | [libscan](https://github.com/sist2app/sist2/tree/master/libscan) | yes      | no          | -                                                                                                                                      |
 | tar, zip, rar, 7z, ar ...                                                 | Libarchive                                                                   | yes\*    | -           | no                                                                                                                                     |
-| docx, xlsx, pptx                                                          | [libscan](https://github.com/sist2app/sist2/tree/master/third-party/libscan) | yes      | if embedded | creator, modified_by, title                                                                                                            |
+| docx, xlsx, pptx                                                          | [libscan](https://github.com/sist2app/sist2/tree/master/libscan) | yes      | if embedded | creator, modified_by, title                                                                                                            |
 | doc (MS Word 97-2003)                                                     | antiword                                                                     | yes      | no          | author, title                                                                                                                          |
 | mobi, azw, azw3                                                           | libmobi                                                                      | yes      | yes         | author, title                                                                                                                          |
 | wpd (WordPerfect)                                                         | libwpd                                                                       | yes      | no          | *planned*                                                                                                                              |
-| json, jsonl, ndjson                                                       | [libscan](https://github.com/sist2app/sist2/tree/master/third-party/libscan) | yes      | -           | -                                                                                                                                      |
+| json, jsonl, ndjson                                                       | [libscan](https://github.com/sist2app/sist2/tree/master/libscan) | yes      | -           | -                                                                                                                                      |
 
 \* *See [Archive files](#archive-files)*
 
@@ -168,28 +165,6 @@ indices, but it uses much less memory and is easier to set up.
 | Media Type breakdown for search results      |                                                     |                                                                   ✓                                                                   |
 | Embeddings search                            |                      ✓ *O(n)*                       |                                                              ✓ *O(logn)*                                                              |
 
-### NER
-
-sist2 v3.0.4+ supports named-entity recognition (NER). Simply add a supported repository URL to
-**Configuration** > **Machine learning options** > **Model repositories**
-to enable it.
-
-The text processing is done in your browser, no data is sent to any third-party services.
-See [sist2app/sist2-ner-models](https://github.com/sist2app/sist2-ner-models) for more details.
-
-#### List of available repositories:
-
-| URL                                                                                                     | Maintainer                              | Purpose |
-|---------------------------------------------------------------------------------------------------------|-----------------------------------------|---------|
-| [sist2app/sist2-ner-models](https://raw.githubusercontent.com/sist2app/sist2-ner-models/main/repo.json) | [sist2app](https://github.com/sist2app) | General |
-
-<details>
-  <summary>Screenshot</summary>
-
-![ner](docs/ner.png)
-
-</details>
-
 ## Build from source
 
 You can compile **sist2** by yourself if you don't want to use the pre-compiled binaries
@@ -197,11 +172,12 @@ You can compile **sist2** by yourself if you don't want to use the pre-compiled 
 ### Using docker
 
 ```bash
-git clone --recursive https://github.com/sist2app/sist2/
+git clone https://github.com/sist2app/sist2/
 cd sist2
-docker build . -t my-sist2-image
-# Copy sist2 executable from docker image
-docker run --rm --entrypoint cat my-sist2-image /root/sist2 > sist2-x64-linux
+# Static binary for the current architecture
+scripts/make_static.sh
+# ...or the full runtime image
+docker buildx build . -t my-sist2-image
 ```
 
 ### Using a linux computer
@@ -212,18 +188,15 @@ docker run --rm --entrypoint cat my-sist2-image /root/sist2 > sist2-x64-linux
    apt install gcc g++ python3 yasm ragel automake autotools-dev wget libtool libssl-dev curl zip unzip tar xorg-dev libglu1-mesa-dev libxcursor-dev libxml2-dev libxinerama-dev gettext nasm git nodejs
    ```
 
-2. Install vcpkg using my fork: https://github.com/sist2app/vcpkg
-3. Install vcpkg dependencies
+2. Install [vcpkg](https://github.com/microsoft/vcpkg)
+3. Build (the frontends must be built **before** the C binary: their `dist/` output is
+   embedded into the executable)
 
     ```bash
-    vcpkg install openblas curl[core,openssl] sqlite3[core,fts5,json1] cpp-jwt pcre cjson brotli libarchive[core,bzip2,libxml2,lz4,lzma,lzo] pthread tesseract libxml2 libmupdf[ocr] gtest mongoose libmagic libraw gumbo ffmpeg[core,avcodec,avformat,swscale,swresample,webp,opus,mp3lame,vpx,zlib] libgit2[core,pcre]
-    ```
-
-4. Build
-    ```bash
-    git clone --recursive https://github.com/sist2app/sist2/
+    git clone https://github.com/sist2app/sist2/
+    cd sist2
     (cd sist2-vue; npm install; npm run build)
-    (cd sist2-admin/frontend; npm install; npm run build)
-    cmake -DSIST_DEBUG=off -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=<VCPKG_ROOT>/scripts/buildsystems/vcpkg.cmake .
-    make
+    (cd sist2-admin; npm install; npm run build)
+    cmake -B build -DSIST_DEBUG=off -DCMAKE_TOOLCHAIN_FILE=<VCPKG_ROOT>/scripts/buildsystems/vcpkg.cmake
+    cmake --build build -j $(nproc)
     ```

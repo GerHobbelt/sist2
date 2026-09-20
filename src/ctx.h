@@ -3,6 +3,7 @@
 
 #include "sist.h"
 #include "tpool.h"
+#include "src/worker/thread_pool.h"
 #include "libscan/scan.h"
 #include "libscan/arc/arc.h"
 #include "libscan/comic/comic.h"
@@ -64,7 +65,7 @@ typedef struct {
     es_version_t *es_version;
     char *es_index;
     int batch_size;
-    tpool_t *pool;
+    thread_pool_t *pool;
     /**
      * Set to false when using --print
      */
@@ -101,6 +102,8 @@ typedef struct {
     int thread_id;
     database_t *ipc_db;
     database_t *index_db;
+    /** Document the thumbnails currently being written belong to */
+    int last_doc_id;
 } ProcData_t;
 
 extern ScanCtx_t ScanCtx;
