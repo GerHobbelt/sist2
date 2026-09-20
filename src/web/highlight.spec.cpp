@@ -435,3 +435,91 @@ TEST(HighlightText, ContextLargerThanTheCapIsClamped) {
 TEST(HighlightTerms, FreeingNullIsAllowed) {
     highlight_free_terms(nullptr);
 }
+
+/** Owns the page break array for the duration of a test */
+class PageBreaks {
+public:
+    explicit PageBreaks(const char *csv) : breaks_(highlight_parse_page_breaks(csv, &count_)) {}
+
+    ~PageBreaks() { free(breaks_); }
+
+    const size_t *get() const { return breaks_; }
+
+    int count() const { return count_; }
+
+    std::vector<size_t> list() const { return {breaks_, breaks_ + count_}; }
+
+private:
+    int count_ = 0;
+    size_t *breaks_;
+};
+
+TEST(PageBreaksParse, ReadsTheOffsetsAScanWrote) {
+    ASSERT_EQ(PageBreaks("0,31,1036").list(), (std::vector<size_t>{0, 31, 1036}));
+}
+
+TEST(PageBreaksParse, EmptyForADocumentThatIsNotPaginated) {
+    ASSERT_EQ(PageBreaks("").get(), nullptr);
+    ASSERT_EQ(PageBreaks(nullptr).get(), nullptr);
+}
+
+TEST(FragmentPage, FindsThePageAFragmentCameFrom) {
+    const char *text = "page one text page two text page three text";
+    const PageBreaks breaks("0,14,28");
+
+    ASSERT_EQ(highlight_fragment_page(text, 0, "page <mark>one</mark>", breaks.get(), breaks.count()), 1);
+    ASSERT_EQ(highlight_fragment_page(text, 0, "page <mark>two</mark>", breaks.get(), breaks.count()), 2);
+    ASSERT_EQ(highlight_fragment_page(text, 0, "page <mark>three</mark>", breaks.get(), breaks.count()), 3);
+}
+
+/** The excerpt starts a few words before the match, which can be on the page before it */
+TEST(FragmentPage, AnswersWithThePageTheMatchIsOn) {
+    const char *text = "page one text page two text";
+    const PageBreaks breaks("0,14");
+
+    ASSERT_EQ(highlight_fragment_page(text, 0, "one text page <mark>two</mark>", breaks.get(), breaks.count()), 2);
+}
+
+TEST(FragmentPage, CountsCodePointsRatherThanBytes) {
+    // Two code points, four bytes, before the second page starts
+    const char *text = "éé page two";
+    const PageBreaks breaks("0,3");
+
+    ASSERT_EQ(highlight_fragment_page(text, 0, "<mark>page</mark>", breaks.get(), breaks.count()), 2);
+}
+
+TEST(FragmentPage, ZeroWhenTheFragmentIsNotPartOfTheText) {
+    const PageBreaks breaks("0,14");
+
+    ASSERT_EQ(highlight_fragment_page("page one text", 0, "<mark>elsewhere</mark>", breaks.get(), breaks.count()), 0);
+}
+
+/** A chunk's excerpt is placed on the chunk's page, not on that of an identical run of text before it */
+TEST(FragmentPage, SearchesFromTheOffsetItWasGiven) {
+    const char *text = "the mould page two the mould";
+    const PageBreaks breaks("0,15");
+
+    ASSERT_EQ(highlight_fragment_page(text, 0, "the <mark>mould</mark>", breaks.get(), breaks.count()), 1);
+    ASSERT_EQ(highlight_fragment_page(text, 19, "the <mark>mould</mark>", breaks.get(), breaks.count()), 2);
+}
+
+/** An offset past the end of the text falls back to all of it rather than reading out of bounds */
+TEST(FragmentPage, IgnoresAnOffsetPastTheEnd) {
+    const char *text = "page one text page two text";
+    const PageBreaks breaks("0,14");
+
+    ASSERT_EQ(highlight_fragment_page(text, 9999, "page <mark>two</mark>", breaks.get(), breaks.count()), 2);
+}
+
+/** The first word of the excerpt matching is not the same as no match at all */
+TEST(FragmentPage, PlacesAFragmentThatStartsWithItsMatch) {
+    const char *text = "one text mould text mould";
+    const PageBreaks breaks("0,20");
+
+    ASSERT_EQ(highlight_fragment_page(text, 0, "<mark>mould</mark> text <mark>mould</mark>",
+                                      breaks.get(), breaks.count()), 1);
+}
+
+TEST(FragmentPage, ZeroForADocumentThatIsNotPaginated) {
+    ASSERT_EQ(highlight_fragment_page("page one text", 0, "<mark>one</mark>", nullptr, 0), 0);
+}

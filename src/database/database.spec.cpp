@@ -52,7 +52,6 @@ protected:
     void TearDown() override {
         database_close(db, FALSE);
         std::filesystem::remove(db_path);
-
     }
 
     /** A model a user script would have registered, and one chunk of a document it embedded */
@@ -100,7 +99,11 @@ static const char *temp_directory() {
     if (directory == nullptr) {
         directory = getenv("TMPDIR");
     }
-    return directory == nullptr ? "/tmp" : directory;
+    if (directory != nullptr) {
+        return directory;
+    }
+
+    return sist_temp_dir();
 }
 
 /**

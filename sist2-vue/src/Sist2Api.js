@@ -4,6 +4,18 @@ import Sist2Query from "@/Sist2ElasticsearchQuery";
 import store from "@/store";
 
 
+/** Picture formats that no browser decodes, which sist2 web re-encodes on the fly */
+const TRANSCODED_MIME_TYPES = [
+    "image/heic",
+    "image/heif",
+    "image/tiff",
+    "image/x-tiff",
+    "image/jp2",
+    "image/x-portable-bitmap",
+    "image/x-portable-graymap",
+    "image/x-portable-pixmap"
+];
+
 class Sist2Api {
 
     baseUrl;
@@ -68,10 +80,9 @@ class Sist2Api {
                 } else {
                     hit._props.isImage = true;
                 }
-                if ("width" in hit._source && !hit._props.isSubDocument && hit._source.videoc !== "tiff"
-                    && hit._source.videoc !== "raw" && hit._source.videoc !== "ppm"
-                    && hit._source.mime !== "image/jp2") {
+                if ("width" in hit._source && !hit._props.isSubDocument && hit._source.videoc !== "raw") {
                     hit._props.isPlayableImage = true;
+                    hit._props.needsTranscode = TRANSCODED_MIME_TYPES.includes(hit._source.mime);
                 }
                 if ("width" in hit._source && "height" in hit._source) {
                     hit._props.imageAspectRatio = hit._source.width / hit._source.height;
@@ -111,18 +122,23 @@ class Sist2Api {
      * the kNN inner hit, and the query terms, if the search carries any, are marked here.
      */
     setHitChunk(hit) {
-        const chunk = hit.inner_hits?.chunk?.hits?.hits[0]?._source;
+        const fields = hit.inner_hits?.chunk?.hits?.hits[0]?.fields;
 
         delete hit.inner_hits;
 
-        if (!chunk?.text) {
+        const text = fields?.["emb_chunks.text"]?.[0];
+
+        if (!text) {
             return;
         }
 
-        hit.chunk = {start: chunk.start, end: chunk.end};
+        hit.chunk = {
+            start: fields["emb_chunks.start"]?.[0],
+            end: fields["emb_chunks.end"]?.[0]
+        };
 
         const excerpt = excerptText(
-            chunk.text,
+            text,
             queryTerms(store.getters.searchText),
             Number(store.getters.optFragmentSize)
         );
@@ -470,7 +486,13 @@ class Sist2Api {
 
     getDateRangeEs() {
         return this.esQuery({
-            // TODO: filter current selected indices
+            query: {
+                bool: {
+                    filter: [
+                        {terms: {index: store.getters.selectedIndices.map(idx => idx.id)}}
+                    ]
+                }
+            },
             aggs: {
                 dateMin: {min: {field: "mtime"}},
                 dateMax: {max: {field: "mtime"}},
@@ -597,7 +619,7 @@ class Sist2Api {
         delete query.query["function_score"];
 
         query._source = {
-            includes: ["content", "name", "path", "extension", "index"]
+            includes: ["content", "name", "path", "extension", "index", "page_breaks"]
         }
 
         query.size = 1;

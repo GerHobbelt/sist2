@@ -207,7 +207,7 @@ export default new Vuex.Store({
         busTouchEnd: () => {
             // noop
         },
-        busTnTouchStart: (doc_id) => {
+        busTnTouchStart: () => {
             // noop
         },
         setAuth0Token: (state, val) => state.auth0Token = val,
@@ -418,6 +418,9 @@ export default new Vuex.Store({
         uiLightboxKey: state => state.uiLightboxKey,
         uiLightboxSlide: state => state.uiLightboxSlide,
         uiSqliteMode: state => state.uiSqliteMode,
+        // The SQLite backend corrects spellings against a vocabulary the search index only
+        // carries when it was built with one
+        fuzzyAvailable: state => !state.uiSqliteMode || !!(state.sist2Info && state.sist2Info.sqliteFuzzy),
 
         optHideDuplicates: state => state.optHideDuplicates,
         optLang: state => state.optLang,

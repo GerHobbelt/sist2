@@ -19,7 +19,7 @@ typedef struct {
     /** Number of thumbnails to generate for videos */
     int tn_count;
 
-    long max_media_buffer;
+    int64_t max_media_buffer;
     int read_subtitles;
 
     const char *tesseract_lang;
@@ -30,7 +30,6 @@ typedef struct {
 } scan_media_ctx_t;
 
 static inline AVCodecContext *alloc_jpeg_encoder(int w, int h, int qscale) {
-
     const AVCodec *jpeg_codec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
     AVCodecContext *jpeg = avcodec_alloc_context3(jpeg_codec);
     jpeg->width = w;
@@ -50,7 +49,6 @@ static inline AVCodecContext *alloc_jpeg_encoder(int w, int h, int qscale) {
 }
 
 static inline AVCodecContext *alloc_webp_encoder(int w, int h, int qscale) {
-
     // AV_CODEC_ID_WEBP resolves to libwebp_anim, which wraps every still thumbnail in an
     // animation encoder for nothing
     const AVCodec *webp_codec = avcodec_find_encoder_by_name("libwebp");
@@ -83,6 +81,12 @@ static inline AVCodecContext *alloc_webp_encoder(int w, int h, int qscale) {
 void parse_media(scan_media_ctx_t *ctx, vfile_t *f, document_t *doc, const char *mime_str);
 
 void init_media();
+
+/**
+ * Re-encodes the picture of a file as WebP, scaled to fit max_size, for browsers that cannot
+ * display the original format. Returns 0 and a buffer that the caller frees.
+ */
+int transcode_image(scan_media_ctx_t *ctx, const char *filepath, int max_size, void **buf, size_t *buf_len);
 
 int store_image_thumbnail(scan_media_ctx_t *ctx, void *buf, size_t buf_len, document_t *doc, const char *url);
 

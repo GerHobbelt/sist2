@@ -5,7 +5,9 @@
 #include "src/index/web.h"
 #include "src/auth0/auth0_c_api.h"
 #include "src/web/web_util.h"
+#include "src/web/highlight.h"
 #include "src/cli.h"
+#include "libscan/media/media.h"
 #include <time.h>
 
 #include <src/ctx.h>
@@ -204,6 +206,130 @@ void thumbnail(struct mg_connection *nc, struct mg_http_message *hm) {
     serve_thumbnail(nc, hm, sid.index_id, sid.doc_id, 0);
 }
 
+/** The text of a document of a search result, or NULL when the index it came from is not loaded */
+static char *hit_content(const cJSON *hit) {
+    const cJSON *id = cJSON_GetObjectItem(hit, "_id");
+
+    if (!cJSON_IsString(id)) {
+        return NULL;
+    }
+
+    sist_id_t sid;
+
+    if (strlen(id->valuestring) != SIST_SID_LEN - 1 || !parse_sid(&sid, id->valuestring)) {
+        return NULL;
+    }
+
+    const index_t *idx = web_get_index_by_id(sid.index_id);
+
+    if (idx == NULL || idx->db == NULL) {
+        return NULL;
+    }
+
+    return database_get_content(idx->db, sid.doc_id);
+}
+
+/** TRUE when the hit was modified */
+static int add_hit_pages(cJSON *hit) {
+    cJSON *source = cJSON_GetObjectItem(hit, "_source");
+    const cJSON *page_breaks = cJSON_GetObjectItem(source, "page_breaks");
+
+    if (!cJSON_IsString(page_breaks)) {
+        return FALSE;
+    }
+
+    // A request that asks for the text itself is not a search: its one fragment is the whole
+    // document, and the frontend places the hits inside it on its own
+    if (cJSON_IsString(cJSON_GetObjectItem(source, "content"))) {
+        return FALSE;
+    }
+
+    const cJSON *highlight = cJSON_GetObjectItem(hit, "highlight");
+    // A fuzzy search highlights both fields; the frontend shows the nGram one
+    const cJSON *fragments = cJSON_GetObjectItem(highlight, "content.nGram");
+
+    if (!cJSON_IsArray(fragments)) {
+        fragments = cJSON_GetObjectItem(highlight, "content");
+    }
+
+    if (!cJSON_IsArray(fragments)) {
+        return FALSE;
+    }
+
+    int break_count;
+    size_t *breaks = highlight_parse_page_breaks(page_breaks->valuestring, &break_count);
+
+    // Only this function reads them, and a long document's offsets are larger than the excerpt
+    // they place
+    cJSON_DeleteItemFromObject(source, "page_breaks");
+
+    if (breaks == NULL) {
+        return TRUE;
+    }
+
+    char *content = hit_content(hit);
+
+    if (content != NULL) {
+        cJSON *pages = cJSON_CreateArray();
+
+        const cJSON *fragment;
+        cJSON_ArrayForEach(fragment, fragments) {
+            const int page = cJSON_IsString(fragment)
+                             ? highlight_fragment_page(content, 0, fragment->valuestring, breaks, break_count)
+                             : 0;
+            cJSON_AddItemToArray(pages, cJSON_CreateNumber(page));
+        }
+
+        cJSON_AddItemToObject(hit, "hit_pages", pages);
+        free(content);
+    }
+
+    free(breaks);
+
+    return TRUE;
+}
+
+/*
+ * Elasticsearch quotes the passage that matched but never says where in the document it was, and
+ * the text is not part of _source either, so it is read back from the index it came from. A
+ * response that gets nothing added is sent on as it arrived.
+ */
+char *es_add_hit_pages(const char *body, size_t size) {
+    char *buf = malloc(size + 1);
+    memcpy(buf, body, size);
+    buf[size] = '\0';
+
+    // Only a paginated document carries them, and most searches return none
+    if (strstr(buf, "\"page_breaks\"") == NULL) {
+        free(buf);
+        return NULL;
+    }
+
+    cJSON *json = cJSON_Parse(buf);
+    free(buf);
+
+    if (json == NULL) {
+        return NULL;
+    }
+
+    int any = FALSE;
+
+    cJSON *hit;
+    cJSON_ArrayForEach(hit, cJSON_GetObjectItem(cJSON_GetObjectItem(json, "hits"), "hits")) {
+        any |= add_hit_pages(hit);
+    }
+
+    if (!any) {
+        cJSON_Delete(json);
+        return NULL;
+    }
+
+    char *annotated = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+
+    return annotated;
+}
+
 void search(struct mg_connection *nc, struct mg_http_message *hm) {
     if (hm->body.len == 0) {
         LOG_DEBUG("serve.c", "Client sent empty body, ignoring request");
@@ -251,17 +377,14 @@ void serve_file_from_url(cJSON *json, index_t *idx, struct mg_connection *nc) {
     dyn_buffer_destroy(&encoded);
 }
 
-void serve_file_from_disk(cJSON *json, index_t *idx, struct mg_connection *nc, struct mg_http_message *hm) {
+// root[PATH_MAX] + path_unescaped + '/' + name_unescaped + '.' + ext
+#define FULL_PATH_LEN (PATH_MAX * 7)
 
-    if (strcmp(MG_VERSION, EXPECTED_MONGOOSE_VERSION) != 0) {
-        LOG_WARNING("serve.c", "sist2 was not linked with latest mongoose version, "
-                               "serving file from disk might not work as expected.");
-    }
+static void document_full_path(const cJSON *json, const index_t *idx, char *full_path) {
 
     const char *path = cJSON_GetObjectItem(json, "path")->valuestring;
     const char *name = cJSON_GetObjectItem(json, "name")->valuestring;
     const char *ext = cJSON_GetObjectItem(json, "extension")->valuestring;
-    const char *mime = cJSON_GetObjectItem(json, "mime")->valuestring;
 
     char name_unescaped[PATH_MAX * 3];
     str_unescape(name_unescaped, name);
@@ -269,11 +392,24 @@ void serve_file_from_disk(cJSON *json, index_t *idx, struct mg_connection *nc, s
     char path_unescaped[PATH_MAX * 3];
     str_unescape(path_unescaped, path);
 
-    // root[PATH_MAX] + path_unescaped + '/' + name_unescaped + '.' + ext
-    char full_path[PATH_MAX * 7];
-    snprintf(full_path, sizeof(full_path), "%s%s%s%s%s%s",
+    snprintf(full_path, FULL_PATH_LEN, "%s%s%s%s%s%s",
              idx->desc.root, path_unescaped, strlen(path_unescaped) == 0 ? "" : "/",
              name_unescaped, strlen(ext) == 0 ? "" : ".", ext);
+}
+
+void serve_file_from_disk(cJSON *json, index_t *idx, struct mg_connection *nc, struct mg_http_message *hm) {
+
+    if (strcmp(MG_VERSION, EXPECTED_MONGOOSE_VERSION) != 0) {
+        LOG_WARNING("serve.c", "sist2 was not linked with latest mongoose version, "
+                               "serving file from disk might not work as expected.");
+    }
+
+    const char *name = cJSON_GetObjectItem(json, "name")->valuestring;
+    const char *ext = cJSON_GetObjectItem(json, "extension")->valuestring;
+    const char *mime = cJSON_GetObjectItem(json, "mime")->valuestring;
+
+    char full_path[FULL_PATH_LEN];
+    document_full_path(json, idx, full_path);
 
     LOG_DEBUGF("serve.c", "Serving file from disk: %s", full_path);
 
@@ -393,6 +529,9 @@ void index_info(struct mg_connection *nc) {
 
     if (WebCtx.search_backend == SQLITE_SEARCH_BACKEND) {
         cJSON_AddStringToObject(json, "searchBackend", "sqlite");
+        // A search index built with --skip-spellfix, or by a version that had none, has nothing
+        // to correct spellings against
+        cJSON_AddBoolToObject(json, "sqliteFuzzy", database_fts_has_vocab(WebCtx.search_db));
     } else {
         cJSON_AddStringToObject(json, "searchBackend", "elasticsearch");
     }
@@ -451,6 +590,90 @@ void file(struct mg_connection *nc, struct mg_http_message *hm) {
     } else {
         serve_file_from_url(source, idx, nc);
     }
+    cJSON_Delete(source);
+}
+
+/** The longest side of a picture re-encoded for the browser */
+#define TRANSCODED_IMAGE_SIZE 2560
+#define TRANSCODED_IMAGE_QUALITY 80
+
+static void media_log(const char *filepath, int level, char *str) {
+    if (LogCtx.verbose && (level != LEVEL_DEBUG || LogCtx.very_verbose)) {
+        sist_log(filepath, level, str);
+    }
+}
+
+static void media_logf(const char *filepath, int level, char *format, ...) {
+
+    va_list args;
+
+    va_start(args, format);
+    if (LogCtx.verbose && (level != LEVEL_DEBUG || LogCtx.very_verbose)) {
+        vsist_logf(filepath, level, format, args);
+    }
+    va_end(args);
+}
+
+/**
+ * A picture in a format that no browser decodes, re-encoded as WebP. The transcode runs on the
+ * event loop, so a request for one holds up the others until it is done.
+ */
+void transcoded_image(struct mg_connection *nc, struct mg_http_message *hm) {
+    sist_id_t sid;
+
+    if (hm->uri.len != 20 || !parse_sid(&sid, hm->uri.buf + 3)) {
+        LOG_DEBUGF("serve.c", "Invalid picture path: %.*s", (int) hm->uri.len, hm->uri.buf);
+        HTTP_REPLY_NOT_FOUND
+        return;
+    }
+
+    index_t *idx = web_get_index_by_id(sid.index_id);
+    if (idx == NULL) {
+        HTTP_REPLY_NOT_FOUND
+        return;
+    }
+
+    cJSON *source = get_root_document_by_id(sid.index_id, sid.doc_id);
+    if (source == NULL) {
+        HTTP_REPLY_NOT_FOUND
+        return;
+    }
+
+    if (strlen(idx->desc.rewrite_url) != 0) {
+        serve_file_from_url(source, idx, nc);
+        cJSON_Delete(source);
+        return;
+    }
+
+    char full_path[FULL_PATH_LEN];
+    document_full_path(source, idx, full_path);
+
+    scan_media_ctx_t media_ctx = {
+            .log = media_log,
+            .logf = media_logf,
+            .tn_qscale = TRANSCODED_IMAGE_QUALITY,
+            .tn_count = 1
+    };
+
+    void *buf = NULL;
+    size_t buf_len = 0;
+
+    if (transcode_image(&media_ctx, full_path, TRANSCODED_IMAGE_SIZE, &buf, &buf_len) != 0) {
+        LOG_DEBUGF("serve.c", "Could not transcode image, serving it as-is: %s", full_path);
+        serve_file_from_disk(source, idx, nc, hm);
+        cJSON_Delete(source);
+        return;
+    }
+
+    web_send_headers(
+            nc, 200, buf_len,
+            "Content-Type: image/webp\r\n"
+            "Cache-Control: private, max-age=3600"
+    );
+    mg_send(nc, buf, buf_len);
+    nc->is_resp = 0;
+
+    free(buf);
     cJSON_Delete(source);
 }
 
@@ -726,6 +949,8 @@ static void ev_router(struct mg_connection *nc, int ev, void *ev_data) {
             status(nc);
         } else if (mg_http_match_uri(hm, "/f/*")) {
             file(nc, hm);
+        } else if (mg_http_match_uri(hm, "/p/*")) {
+            transcoded_image(nc, hm);
         } else if (mg_http_match_uri(hm, "/t/*/*")) {
             thumbnail_with_num(nc, hm);
         } else if (mg_http_match_uri(hm, "/t/*")) {
@@ -754,9 +979,15 @@ static void ev_router(struct mg_connection *nc, int ev, void *ev_data) {
                 response_t *r = ctx->response;
 
                 if (r->status_code == 200) {
-                    web_send_headers(nc, 200, r->size, "Content-Type: application/json");
-                    mg_send(nc, r->body, r->size);
+                    char *annotated = es_add_hit_pages(r->body, r->size);
+                    const char *response = annotated == NULL ? r->body : annotated;
+                    const size_t response_size = annotated == NULL ? r->size : strlen(annotated);
+
+                    web_send_headers(nc, 200, response_size, "Content-Type: application/json");
+                    mg_send(nc, response, response_size);
                     nc->is_resp = 0;
+
+                    free(annotated);
                 } else if (r->status_code == 0) {
                     sist_log("serve.c", LOG_SIST_ERROR, "Could not connect to elasticsearch!");
 

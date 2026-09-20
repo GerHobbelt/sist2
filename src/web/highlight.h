@@ -12,6 +12,15 @@
  */
 char **highlight_query_terms(const char *query);
 
+/**
+ * Word characters, as close to fts5's unicode61 tokenizer as byte comparisons get: every non-ASCII
+ * byte belongs to a word, so UTF-8 sequences stay whole. Case folding is ASCII-only, so a query
+ * for "CAFÉ" does not highlight "café" the way the tokenizer that matched it would have.
+ */
+int fts_is_word_byte(unsigned char c);
+
+int fts_is_fts5_operator(const char *word, size_t len);
+
 void highlight_free_terms(char **terms);
 
 /**
@@ -20,5 +29,20 @@ void highlight_free_terms(char **terms);
  * is nothing to show. Caller frees.
  */
 char *highlight_text(const char *text, char *const *terms, int context_words);
+
+/**
+ * The page offsets a scan wrote for a paginated document ("0,31,1036"), as code point offsets into
+ * its text. Returns NULL when the document has none; free the array when done.
+ */
+size_t *highlight_parse_page_breaks(const char *csv, int *count);
+
+/**
+ * The 1-based page a marked-up fragment of the text was taken from, or 0 when the fragment is not
+ * part of it. The <mark> tags a highlighter added are ignored. The fragment is looked up from
+ * search_from onwards, so that an excerpt of a chunk is not placed on the page of an identical
+ * run of text earlier in the document; the page itself is still counted from the start.
+ */
+int highlight_fragment_page(const char *text, size_t search_from, const char *fragment,
+                            const size_t *breaks, int break_count);
 
 #endif

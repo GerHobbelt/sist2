@@ -212,11 +212,6 @@ html, body {
     color: #e0e0e0;
 }
 
-.theme-black .nav-tabs .nav-link:focus, .theme-black .nav-tabs .nav-link:focus {
-    border-color: #616161 #616161 #212121;
-    color: #e0e0e0;
-}
-
 .theme-black .nav-tabs .nav-link:focus, .theme-black .nav-tabs .nav-link:hover {
     border-color: #e0e0e0 #e0e0e0 #212121;
     color: #e0e0e0;
@@ -348,6 +343,10 @@ mark {
 .theme-black .content-div mark {
     background: rgba(251, 191, 41, 0.40);
     color: white;
+}
+
+.content-div mark.current-hit {
+    outline: 2px solid #FF9800;
 }
 
 .content-div {
