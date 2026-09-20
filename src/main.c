@@ -222,6 +222,8 @@ void initialize_scan_context(scan_args_t *args) {
     ScanCtx.raw_ctx.log = log_callback;
     ScanCtx.raw_ctx.logf = logf_callback;
 
+    ScanCtx.media_ctx.ogg_mime = mime_get_mime_by_string("application/ogg");
+
     // Wpd
     ScanCtx.wpd_ctx.content_size = args->content_size;
     ScanCtx.wpd_ctx.log = log_callback;
@@ -234,6 +236,14 @@ void initialize_scan_context(scan_args_t *args) {
     ScanCtx.json_ctx.logf = logf_callback;
     ScanCtx.json_ctx.json_mime = mime_get_mime_by_string("application/json");
     ScanCtx.json_ctx.ndjson_mime = mime_get_mime_by_string("application/ndjson");
+
+    // Email
+    ScanCtx.email_ctx.content_size = args->content_size;
+    ScanCtx.email_ctx.log = log_callback;
+    ScanCtx.email_ctx.logf = logf_callback;
+    ScanCtx.email_ctx.parse = (parse_callback_t) parse;
+    ScanCtx.email_ctx.rfc822_mime = mime_get_mime_by_string("message/rfc822");
+    ScanCtx.email_ctx.mbox_mime = mime_get_mime_by_string("application/mbox");
 }
 
 // Both producers run on the master's producer thread and submit through scan_master_submit()
@@ -288,7 +298,11 @@ void sist2_scan(scan_args_t *args) {
         database_incremental_scan_end(db);
     }
 
-    database_generate_stats(db, args->treemap_threshold);
+    if (args->no_stats) {
+        LOG_INFO("main.c", "Skipping stats generation (--no-stats)");
+    } else {
+        database_generate_stats(db, args->treemap_threshold);
+    }
     database_close(db, args->optimize_database);
     ignorelist_destroy(ScanCtx.ignorelist);
 }
@@ -430,6 +444,7 @@ void sist2_web(web_args_t *args) {
     WebCtx.auth0_domain = args->auth0_domain;
     WebCtx.auth0_audience = args->auth0_audience;
     strcpy(WebCtx.lang, args->lang);
+    strcpy(WebCtx.theme, args->theme);
 
     if (args->search_backend == SQLITE_SEARCH_BACKEND) {
         WebCtx.search_db = database_create(args->search_index_path, FTS_DATABASE);
@@ -554,6 +569,8 @@ int main(int argc, const char *argv[]) {
             OPT_BOOLEAN(0, "fast", &scan_args->fast, "Only index file names & mime type."),
             OPT_STRING(0, "treemap-threshold", &scan_args->treemap_threshold_str, "Relative size threshold for treemap "
                                                                                   "(see USAGE.md). DEFAULT: 0.0005"),
+            OPT_BOOLEAN(0, "no-stats", &scan_args->no_stats,
+                        "Skip the stats generation step. The stats page will have nothing to show for this index."),
             OPT_INTEGER(0, "mem-buffer", &scan_args->max_memory_buffer_mib,
                         "Maximum memory buffer size per thread in MiB for files inside archives "
                         "(see USAGE.md). DEFAULT: 2000"),
@@ -611,6 +628,7 @@ int main(int argc, const char *argv[]) {
             OPT_STRING(0, "tagline", &web_args->tagline, "Tagline in navbar"),
             OPT_BOOLEAN(0, "dev", &web_args->dev, "Serve html & js files from disk (for development)"),
             OPT_STRING(0, "lang", &web_args->lang, "Default UI language. Can be changed by the user"),
+            OPT_STRING(0, "theme", &web_args->theme, "Default UI theme (light|black). Can be changed by the user"),
 
             OPT_END(),
     };

@@ -43,6 +43,8 @@ typedef struct scan_args {
     int worker;
     /** Seconds a worker may spend on one file before it is killed and restarted, 0 to disable */
     int job_timeout;
+    /** Skip the aggregates the stats page reads */
+    int no_stats;
 } scan_args_t;
 
 scan_args_t *scan_args_create();
@@ -92,6 +94,7 @@ typedef struct web_args {
     char *tag_credentials;
     char *tagline;
     char *lang;
+    char *theme;
     char auth_user[256];
     char auth_pass[256];
     int auth0_enabled;

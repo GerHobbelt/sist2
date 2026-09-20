@@ -131,7 +131,8 @@ export default {
         totalSize: "Total size",
         pathBar: {
             placeholder: "Filter path",
-            modalTitle: "Select path"
+            modalTitle: "Select path",
+            remove: "Remove"
         },
         debug: "Debug information",
         debugDescription: "Information useful for debugging. If you encounter bugs or have suggestions for" +
@@ -141,6 +142,8 @@ export default {
             esConnErrTitle: "Elasticsearch connection error",
             esConnErr: "sist2 web module encountered an error while connecting to Elasticsearch." +
                 " See server logs for more information.",
+            loadErr: "sist2 could not load the search page. Check that the search backend is reachable;" +
+                " see server logs for more information.",
             esQueryErrTitle: "Query error",
             esQueryErr: "Could not parse or execute query, please check the Advanced search documentation. " +
                 "See server logs for more information.",
@@ -169,6 +172,12 @@ export default {
             mimeSize: "Size distribution by media type",
             dateHistogram: "File modification time distribution",
             sizeHistogram: "File size distribution",
+            noStats: "No statistics for this index.",
+        },
+        mimePicker: {
+            selectAll: "Select All",
+            selectNone: "Select None",
+            invert: "Invert",
         },
         indexPicker: {
             selectNone: "Select None",
@@ -309,7 +318,8 @@ export default {
         totalSize: "Gesamtgröße",
         pathBar: {
             placeholder: "Filter Pfad",
-            modalTitle: "Wähle Pfad"
+            modalTitle: "Wähle Pfad",
+            remove: "Entfernen"
         },
         debug: "Debug Informationen",
         debugDescription: "Informationen für das Debugging. Wenn du Bugs gefunden oder Anregungen für " +
@@ -347,6 +357,12 @@ export default {
             mimeSize: "Größen nach Medientyp",
             dateHistogram: "Änderungszeiten",
             sizeHistogram: "Dateigrößen",
+            noStats: "Keine Statistiken für diesen Index.",
+        },
+        mimePicker: {
+            selectAll: "alle auswählen",
+            selectNone: "keinen auswählen",
+            invert: "umkehren",
         },
         indexPicker: {
             selectNone: "keinen auswählen",
@@ -488,7 +504,8 @@ export default {
         totalSize: "Taille totale",
         pathBar: {
             placeholder: "Filtrer le chemin",
-            modalTitle: "Sélectionner le chemin"
+            modalTitle: "Sélectionner le chemin",
+            remove: "Retirer"
         },
         debug: "Information de débogage",
         debugDescription: "Informations utiles pour le débogage\n" +
@@ -527,6 +544,12 @@ export default {
             mimeSize: "Distribution des tailles de fichiers par type de média",
             dateHistogram: "Distribution des dates de modification",
             sizeHistogram: "Distribution des tailles de fichier",
+            noStats: "Aucune statistique pour cet index.",
+        },
+        mimePicker: {
+            selectAll: "Sélectionner tout",
+            selectNone: "Ne rien sélectionner",
+            invert: "Inverser",
         },
         indexPicker: {
             selectNone: "Ne rien sélectionner",
@@ -667,7 +690,8 @@ export default {
         totalSize: "总大小",
         pathBar: {
             placeholder: "过滤路径",
-            modalTitle: "选择路径"
+            modalTitle: "选择路径",
+            remove: "移除"
         },
         debug: "调试信息",
         debugDescription: "对调试除错有用的信息。 若您遇到bug或者想建议新功能，请提交新Issue到" +
@@ -705,6 +729,12 @@ export default {
             mimeSize: "各类文件大小分布",
             dateHistogram: "文件修改时间分布",
             sizeHistogram: "文件大小分布",
+            noStats: "此索引没有统计数据。",
+        },
+        mimePicker: {
+            selectAll: "全选",
+            selectNone: "清空",
+            invert: "反选",
         },
         indexPicker: {
             selectNone: "清空",
@@ -845,7 +875,8 @@ export default {
         totalSize: "Całkowita wielkość",
         pathBar: {
             placeholder: "Filtruj ścieżki",
-            modalTitle: "Wybierz ścieżkę"
+            modalTitle: "Wybierz ścieżkę",
+            remove: "Usuń"
         },
         debug: "Informacje dla programistów",
         debugDescription: "Informacje przydatne do znajdowania błędów w oprogramowaniu. Jeśli napotkasz błąd lub masz" +

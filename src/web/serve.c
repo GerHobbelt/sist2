@@ -60,7 +60,7 @@ void get_embedding(struct mg_connection *nc, struct mg_http_message *hm) {
 
     database_t *db = web_get_database(sid.index_id);
     if (db == NULL) {
-        LOG_DEBUGF("serve.c", "Could not get database for index: %s", sid.index_id);
+        LOG_DEBUGF("serve.c", "Could not get database for index: %d", sid.index_id);
         HTTP_REPLY_NOT_FOUND
         return;
     }
@@ -141,8 +141,12 @@ void serve_favicon_ico(struct mg_connection *nc, UNUSED(struct mg_http_message *
     web_serve_asset_favicon_ico(nc);
 }
 
-void serve_style_css(struct mg_connection *nc, UNUSED(struct mg_http_message *hm)) {
-    web_serve_asset_style_css(nc);
+void serve_style_css(struct mg_connection *nc, struct mg_http_message *hm) {
+    if (WebCtx.dev) {
+        mg_http_serve_file(nc, hm, "sist2-vue/dist/css/index.css", &DefaultServeOpts);
+    } else {
+        web_serve_asset_style_css(nc);
+    }
 }
 
 void serve_thumbnail(struct mg_connection *nc, UNUSED(struct mg_http_message *hm), int index_id,
@@ -343,6 +347,7 @@ void index_info(struct mg_connection *nc) {
     cJSON_AddBoolToObject(json, "esVersionLegacy", IS_LEGACY_VERSION(WebCtx.es_version));
     cJSON_AddBoolToObject(json, "esVersionHasKnn", HAS_KNN(WebCtx.es_version));
     cJSON_AddStringToObject(json, "lang", WebCtx.lang);
+    cJSON_AddStringToObject(json, "theme", WebCtx.theme);
 
     cJSON_AddBoolToObject(json, "auth0Enabled", WebCtx.auth0_enabled);
     if (WebCtx.auth0_enabled) {
@@ -484,19 +489,32 @@ tag_req_t *parse_tag_request(cJSON *json) {
     return req;
 }
 
+/*
+ * The tag is a user-supplied string that ends up inside a JSON document: it goes through cJSON
+ * rather than snprintf, or a tag holding a quote or a backslash writes a request Elasticsearch
+ * cannot parse.
+ */
+char *tag_script_body(const char *source, const char *tag) {
+    cJSON *json = cJSON_CreateObject();
+    cJSON *script = cJSON_AddObjectToObject(json, "script");
+
+    cJSON_AddStringToObject(script, "source", source);
+    cJSON_AddStringToObject(script, "lang", "painless");
+
+    cJSON *params = cJSON_AddObjectToObject(script, "params");
+    cJSON_AddStringToObject(params, "tag", tag);
+
+    char *body = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+
+    return body;
+}
+
 subreq_ctx_t *elastic_delete_tag(const char *sid, const tag_req_t *req) {
-    char *buf = malloc(sizeof(char) * 8192);
-    snprintf(buf, 8192,
-             "{"
-             "    \"script\" : {"
-             "        \"source\": \"if (ctx._source.tag.contains(params.tag)) { ctx._source.tag.remove(ctx._source.tag.indexOf(params.tag)) }\","
-             "        \"lang\": \"painless\","
-             "        \"params\" : {"
-             "            \"tag\" : \"%s\""
-             "        }"
-             "    }"
-             "}", req->name
-    );
+    char *buf = tag_script_body(
+            "if (ctx._source.tag.contains(params.tag)) "
+            "{ ctx._source.tag.remove(ctx._source.tag.indexOf(params.tag)) }",
+            req->name);
 
     char url[4096];
     snprintf(url, sizeof(url), "%s/%s/_update/%s", WebCtx.es_url, WebCtx.es_index, sid);
@@ -505,18 +523,10 @@ subreq_ctx_t *elastic_delete_tag(const char *sid, const tag_req_t *req) {
 }
 
 subreq_ctx_t *elastic_write_tag(const char *sid, const tag_req_t *req) {
-    char *buf = malloc(sizeof(char) * 8192);
-    snprintf(buf, 8192,
-             "{"
-             "    \"script\" : {"
-             "        \"source\": \"if(ctx._source.tag == null) {ctx._source.tag = new ArrayList()} ctx._source.tag.add(params.tag)\","
-             "        \"lang\": \"painless\","
-             "        \"params\" : {"
-             "            \"tag\" : \"%s\""
-             "        }"
-             "    }"
-             "}", req->name
-    );
+    char *buf = tag_script_body(
+            "if(ctx._source.tag == null) {ctx._source.tag = new ArrayList()} "
+            "ctx._source.tag.add(params.tag)",
+            req->name);
 
     char url[4096];
     snprintf(url, sizeof(url), "%s/%s/_update/%s", WebCtx.es_url, WebCtx.es_index, sid);

@@ -29,6 +29,9 @@ typedef enum {
     FILETYPE_MSDOC,
     FILETYPE_JSON,
     FILETYPE_NDJSON,
+    FILETYPE_WPD,
+    FILETYPE_EMAIL,
+    FILETYPE_MBOX,
 } file_type_t;
 
 static file_type_t get_file_type(unsigned int mime, size_t size) {
@@ -40,7 +43,8 @@ static file_type_t get_file_type(unsigned int mime, size_t size) {
     } else if (IS_RAW(mime)) {
         return FILETYPE_RAW;
     } else if ((major_mime == MimeVideo && size >= MIN_VIDEO_SIZE) ||
-               (major_mime == MimeImage && size >= MIN_IMAGE_SIZE) || major_mime == MimeAudio) {
+               (major_mime == MimeImage && size >= MIN_IMAGE_SIZE) || major_mime == MimeAudio ||
+               mime == ScanCtx.media_ctx.ogg_mime) {
         return FILETYPE_MEDIA;
     } else if (IS_PDF(mime)) {
         return FILETYPE_EBOOK;
@@ -64,6 +68,12 @@ static file_type_t get_file_type(unsigned int mime, size_t size) {
         return FILETYPE_JSON;
     } else if (is_ndjson(&ScanCtx.json_ctx, mime)) {
         return FILETYPE_NDJSON;
+    } else if (is_wpd(&ScanCtx.wpd_ctx, mime)) {
+        return FILETYPE_WPD;
+    } else if (is_rfc822(&ScanCtx.email_ctx, mime)) {
+        return FILETYPE_EMAIL;
+    } else if (is_mbox(&ScanCtx.email_ctx, mime)) {
+        return FILETYPE_MBOX;
     }
 
     return FILETYPE_DONT_PARSE;
@@ -219,6 +229,22 @@ void parse(parse_job_t *job) {
             break;
         case FILETYPE_NDJSON:
             parse_ndjson(&ScanCtx.json_ctx, &job->vfile, doc);
+            break;
+        case FILETYPE_WPD:
+            parse_wpd(&ScanCtx.wpd_ctx, &job->vfile, doc);
+            break;
+        case FILETYPE_EMAIL:
+
+            // Insert the document now so that the attachments can link to an existing ID
+            sink_write_document(doc, NULL);
+
+            parse_email(&ScanCtx.email_ctx, &job->vfile, doc);
+            break;
+        case FILETYPE_MBOX:
+
+            sink_write_document(doc, NULL);
+
+            parse_mbox(&ScanCtx.email_ctx, &job->vfile, doc);
             break;
         case FILETYPE_DONT_PARSE:
         default:

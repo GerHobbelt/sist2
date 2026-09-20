@@ -3,8 +3,12 @@
 
 
 #include <signal.h>
+#include <stddef.h>
 
 #define LOG_MAX_LENGTH 8192
+
+/** Best-effort write of a log line; retries partial writes, drops the line on error */
+void log_write(int fd, const char *buf, size_t len);
 
 #define LOG_SIST_DEBUG 0
 #define LOG_SIST_INFO 1
@@ -47,7 +51,8 @@
 
 #include "sist.h"
 
-void sist_logf(const char *filepath, int level, char *format, ...);
+/* printf attribute: a mismatched format argument in a log line is a crash, not a wrong message */
+void sist_logf(const char *filepath, int level, char *format, ...) __attribute__((format(printf, 3, 4)));
 
 void vsist_logf(const char *filepath, int level, char *format, va_list ap);
 

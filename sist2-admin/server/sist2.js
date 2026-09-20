@@ -57,6 +57,9 @@ export function scanArgs(scanOptions, outputPath) {
     if (options.treemap_threshold) {
         args.push(`--treemap-threshold=${options.treemap_threshold}`);
     }
+    if (options.no_stats) {
+        args.push("--no-stats");
+    }
     if (options.read_subtitles) {
         args.push("--read-subtitles");
     }
@@ -109,7 +112,8 @@ export function webArgs(webOptions, backend, indices, auth0PublicKeyFile) {
         "web",
         `--bind=${options.bind}`,
         `--tagline=${options.tagline}`,
-        `--lang=${options.lang}`
+        `--lang=${options.lang}`,
+        `--theme=${options.theme}`
     ];
 
     if (backend.backend_type === "sqlite") {

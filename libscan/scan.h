@@ -18,7 +18,8 @@
 
 #define UNUSED(x) __attribute__((__unused__))  x
 
-typedef void (*logf_callback_t)(const char *filepath, int level, char *format, ...);
+typedef void (*logf_callback_t)(const char *filepath, int level, char *format, ...)
+        __attribute__((format(printf, 3, 4)));
 
 typedef void (*log_callback_t)(const char *filepath, int level, char *str);
 
@@ -138,6 +139,8 @@ typedef struct vfile {
     union {
         int fd;
         struct archive *arc;
+        /** Body of an email part, read from memory */
+        void *mem;
         const void *_test_data;
     };
 

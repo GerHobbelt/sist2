@@ -25,6 +25,7 @@ export default new Vuex.Store({
         embedding: null,
         embeddingDoc: null,
         pathText: "",
+        selectedPaths: [],
         sortMode: "score",
 
         fuzzy: false,
@@ -33,6 +34,7 @@ export default new Vuex.Store({
         optLangIsDefault: true,
         optHideDuplicates: true,
         optTheme: "light",
+        optThemeIsDefault: true,
         optDisplay: "grid",
         optFeaturedFields: "",
 
@@ -98,6 +100,8 @@ export default new Vuex.Store({
         setUiReachedScrollEnd: (state, val) => state.uiReachedScrollEnd = val,
         setTags: (state, val) => state.tags = val,
         setPathText: (state, val) => state.pathText = val,
+        setSelectedPaths: (state, val) => state.selectedPaths = val,
+        _setOnLoadSelectedPaths: (state, val) => state.selectedPaths = val,
         setSizeMin: (state, val) => state.sizeMin = val,
         setSizeMax: (state, val) => state.sizeMax = val,
         setSist2Info: (state, val) => state.sist2Info = val,
@@ -156,7 +160,11 @@ export default new Vuex.Store({
         setUiLightboxCaptions: (state, val) => state.uiLightboxCaptions = val,
         setUiSqliteMode: (state, val) => state.uiSqliteMode = val,
 
-        setOptTheme: (state, val) => state.optTheme = val,
+        setOptTheme: (state, val) => {
+            state.optTheme = val;
+            state.optThemeIsDefault = false;
+        },
+        _setDefaultOptTheme: (state, val) => state.optTheme = val,
         setOptDisplay: (state, val) => state.optDisplay = val,
         setOptColumns: (state, val) => state.optColumns = val,
         setOptHighlight: (state, val) => state.optHighlight = val,
@@ -212,6 +220,10 @@ export default new Vuex.Store({
             if (store.state.optLangIsDefault) {
                 store.commit("setOptLang", val.lang);
             }
+
+            if (store.state.optThemeIsDefault) {
+                store.commit("_setDefaultOptTheme", val.theme);
+            }
         },
         loadFromArgs({commit}, route) {
 
@@ -244,7 +256,8 @@ export default new Vuex.Store({
             }
 
             if (route.query.path) {
-                commit("setPathText", route.query.path)
+                const paths = Array.isArray(route.query.path) ? route.query.path : [route.query.path];
+                commit("_setOnLoadSelectedPaths", paths);
             }
 
             if (route.query.m) {
@@ -278,7 +291,7 @@ export default new Vuex.Store({
                     dMax: state.dateMax,
                     sMin: state.sizeMin,
                     sMax: state.sizeMax,
-                    path: state.pathText ? state.pathText : undefined,
+                    path: state.selectedPaths.length === 0 ? undefined : state.selectedPaths,
                     m: serializeMimes(state.selectedMimeTypes),
                     t: state.selectedTags.length === 0 ? undefined : state.selectedTags.join(","),
                     sort: state.sortMode === "score" ? undefined : state.sortMode,
@@ -311,8 +324,10 @@ export default new Vuex.Store({
                     window.location.reload();
                 }
 
+                // Only what was actually saved: an option added in a newer version keeps its
+                // default instead of turning into undefined
                 Object.keys(state).forEach((key) => {
-                    if (key.startsWith("opt")) {
+                    if (key.startsWith("opt") && key in conf) {
                         (state)[key] = conf[key];
                     }
                 });
@@ -365,6 +380,7 @@ export default new Vuex.Store({
         embedding: (state) => state.embedding,
         seed: (state) => state.seed,
         getPathText: (state) => state.pathText,
+        selectedPaths: (state) => state.selectedPaths,
         indices: state => state.indices,
         sist2Info: state => state.sist2Info,
         indexMap: state => {

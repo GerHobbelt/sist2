@@ -15,6 +15,7 @@
 #define DEFAULT_BATCH_SIZE 70
 #define DEFAULT_TAGLINE "Lightning-fast file system indexer and search tool"
 #define DEFAULT_LANG "en"
+#define DEFAULT_THEME "light"
 
 #define DEFAULT_LISTEN_ADDRESS "localhost:4090"
 #define DEFAULT_TREEMAP_THRESHOLD 0.0005
@@ -287,12 +288,12 @@ int scan_args_validate(scan_args_t *args, int argc, const char **argv) {
             args->list_file = fopen(args->list_path, "r");
 
             if (args->list_file == NULL) {
-                LOG_FATALF("main.c", "List file could not be opened: %s (%s)", args->list_path, errno);
+                LOG_FATALF("main.c", "List file could not be opened: %s (%s)", args->list_path, strerror(errno));
             }
         }
     }
 
-    LOG_DEBUGF("cli.c", "arg tn_quality=%f", args->tn_quality);
+    LOG_DEBUGF("cli.c", "arg tn_quality=%d", args->tn_quality);
     LOG_DEBUGF("cli.c", "arg tn_size=%d", args->tn_size);
     LOG_DEBUGF("cli.c", "arg tn_count=%d", args->tn_count);
     LOG_DEBUGF("cli.c", "arg content_size=%d", args->content_size);
@@ -311,6 +312,7 @@ int scan_args_validate(scan_args_t *args, int argc, const char **argv) {
     LOG_DEBUGF("cli.c", "arg fast=%d", args->fast);
     LOG_DEBUGF("cli.c", "arg fast_epub=%d", args->fast_epub);
     LOG_DEBUGF("cli.c", "arg treemap_threshold=%f", args->treemap_threshold);
+    LOG_DEBUGF("cli.c", "arg no_stats=%d", args->no_stats);
     LOG_DEBUGF("cli.c", "arg max_memory_buffer_mib=%d", args->max_memory_buffer_mib);
     LOG_DEBUGF("cli.c", "arg list_path=%s", args->list_path);
 
@@ -496,6 +498,15 @@ int web_args_validate(web_args_t *args, int argc, const char **argv) {
         return 1;
     }
 
+    if (args->theme == NULL) {
+        args->theme = DEFAULT_THEME;
+    }
+
+    if (strcmp(args->theme, "light") != 0 && strcmp(args->theme, "black") != 0) {
+        fprintf(stderr, "Invalid --theme value, see usage\n");
+        return 1;
+    }
+
     if (args->credentials != NULL) {
         char *ptr = strstr(args->credentials, ":");
         if (ptr == NULL) {
@@ -603,6 +614,7 @@ int web_args_validate(web_args_t *args, int argc, const char **argv) {
     LOG_DEBUGF("cli.c", "arg search_index_path=%s", args->search_index_path);
     LOG_DEBUGF("cli.c", "arg search_backend=%d", args->search_backend);
     LOG_DEBUGF("cli.c", "arg tagline=%s", args->tagline);
+    LOG_DEBUGF("cli.c", "arg theme=%s", args->theme);
     LOG_DEBUGF("cli.c", "arg dev=%d", args->dev);
     LOG_DEBUGF("cli.c", "arg listen=%s", args->listen_address);
     LOG_DEBUGF("cli.c", "arg credentials=%s", args->credentials);

@@ -34,6 +34,7 @@ Scan options
     -e, --exclude=<str>               Files that match this regex will not be scanned.
     --fast                            Only index file names & mime type.
     --treemap-threshold=<str>         Relative size threshold for treemap (see USAGE.md). DEFAULT: 0.0005
+    --no-stats                        Skip the stats generation step. The stats page will have nothing to show for this index.
     --mem-buffer=<int>                Maximum memory buffer size per thread in MiB for files inside archives (see USAGE.md). DEFAULT: 2000
     --read-subtitles                  Read subtitles from media files.
     --fast-epub                       Faster but less accurate EPUB parsing (no thumbnails, metadata).
@@ -74,6 +75,7 @@ Web options
     --tagline=<str>                   Tagline in navbar
     --dev                             Serve html & js files from disk (for development)
     --lang=<str>                      Default UI language. Can be changed by the user
+    --theme=<str>                     Default UI theme (light|black). Can be changed by the user
 
 Made by simon987 <me@simon987.net>. Released under GPL-3.0
 ```
