@@ -51,17 +51,17 @@
 #include <ctype.h>
 #include "git_hash.h"
 
-#define VERSION "4.0.0"
+#define VERSION "4.0.2"
 static const char *const Version = VERSION;
 static const int VersionMajor = 4;
 static const int VersionMinor = 0;
-static const int VersionPatch = 0;
+static const int VersionPatch = 2;
 
 #ifndef SIST_PLATFORM
 #define SIST_PLATFORM unknown
 #endif
 
-#define EXPECTED_MONGOOSE_VERSION "7.17"
+#define EXPECTED_MONGOOSE_VERSION "7.22"
 
 #define Q(x) #x
 #define QUOTE(x) Q(x)

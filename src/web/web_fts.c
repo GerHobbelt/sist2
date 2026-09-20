@@ -212,12 +212,12 @@ fts_search_req_t *get_search_req(struct mg_http_message *hm) {
         cJSON_Delete(json);
         return NULL;
     }
-    int mime_count = req_mime_types.val ? 0 : cJSON_GetArraySize(req_mime_types.val);
+    int mime_count = cJSON_GetArraySize(req_mime_types.val);
     if (mime_count > 999) {
         cJSON_Delete(json);
         return NULL;
     }
-    int tag_count = req_tags.val ? 0 : cJSON_GetArraySize(req_tags.val);
+    int tag_count = cJSON_GetArraySize(req_tags.val);
     if (tag_count > 9999) {
         cJSON_Delete(json);
         return NULL;
@@ -273,7 +273,9 @@ fts_search_req_t *get_search_req(struct mg_http_message *hm) {
                                   : DEFAULT_HIGHLIGHT_CONTEXT_SIZE;
     req->model = req_model.val ? req_model.val->valueint : 0;
 
-    if (req_search_in_path.val->valueint == FALSE && req_query.val) {
+    int search_in_path = req_search_in_path.val ? req_search_in_path.val->valueint : FALSE;
+
+    if (search_in_path == FALSE && req_query.val) {
         if (asprintf(&req->query, "- path : %s", req_query.val->valuestring) == -1) {
             cJSON_Delete(json);
             return NULL;
@@ -337,7 +339,10 @@ fts_search_paths_req_t *get_search_paths_req(struct mg_http_message *hm) {
     fts_search_paths_req_t *req = malloc(sizeof(fts_search_paths_req_t));
 
     req->index_id = req_index_id.val ? req_index_id.val->valueint : 0;
-    req->prefix = req_prefix.val ? strdup(req_prefix.val->valuestring) : NULL;
+    // An empty prefix means the root of the tree, same as no prefix at all
+    req->prefix = req_prefix.val && req_prefix.val->valuestring[0] != '\0'
+                  ? strdup(req_prefix.val->valuestring)
+                  : NULL;
     req->min_depth = req_min_depth.val->valueint;
     req->max_depth = req_max_depth.val->valueint;
 

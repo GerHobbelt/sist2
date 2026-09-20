@@ -45,6 +45,9 @@ typedef struct database {
     database_type_t type;
     sqlite3 *db;
 
+    // Documents and thumbnails written since the last commit; see database_flush_writes()
+    int uncommitted_writes;
+
     // Prepared statements
     sqlite3_stmt *select_thumbnail_stmt;
     sqlite3_stmt *treemap_merge_up_update_stmt;
@@ -55,6 +58,7 @@ typedef struct database {
     sqlite3_stmt *write_document_stmt;
     sqlite3_stmt *write_thumbnail_stmt;
     sqlite3_stmt *get_document;
+    sqlite3_stmt *get_parent_id;
     sqlite3_stmt *get_models;
     sqlite3_stmt *get_embedding;
 
@@ -106,6 +110,8 @@ void database_write_index_descriptor(database_t *db, index_descriptor_t *desc);
 index_descriptor_t *database_read_index_descriptor(database_t *db);
 
 int database_write_document(database_t *db, document_t *doc, const char *json_data);
+
+void database_flush_writes(database_t *db);
 
 database_iterator_t *database_create_document_iterator(database_t *db);
 
@@ -197,6 +203,11 @@ cJSON *database_fts_suggest_tag(database_t *db, char *prefix);
 cJSON *database_fts_get_tags(database_t *db);
 
 cJSON *database_get_document(database_t *db, int doc_id);
+
+#define DATABASE_NO_PARENT (0)
+
+/** Id of the document this one was extracted from, DATABASE_NO_PARENT for a file on disk */
+int database_get_parent_id(database_t *db, int doc_id);
 
 void cosine_sim_func(sqlite3_context *ctx, int argc, sqlite3_value **argv);
 

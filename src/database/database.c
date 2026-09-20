@@ -171,6 +171,10 @@ void database_open(database_t *db) {
                 &db->get_document, NULL));
 
         CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(
+                db->db, "SELECT parent FROM document WHERE id=?", -1,
+                &db->get_parent_id, NULL));
+
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(
                 db->db, "SELECT * FROM model", -1,
                 &db->get_models, NULL));
 
@@ -327,6 +331,7 @@ static void database_finalize_statements(database_t *db) {
             &db->write_document_stmt,
             &db->write_thumbnail_stmt,
             &db->get_document,
+            &db->get_parent_id,
             &db->get_models,
             &db->get_embedding,
             &db->delete_tag_stmt,
@@ -351,6 +356,10 @@ static void database_finalize_statements(database_t *db) {
 
 void database_close(database_t *db, int optimize) {
     LOG_DEBUGF("database.c", "Closing database %s (%p)", db->filename, db->db);
+
+    if (db->db) {
+        database_flush_writes(db);
+    }
 
     if (optimize) {
         LOG_DEBUG("database.c", "Optimizing database");
@@ -399,6 +408,8 @@ void *database_read_thumbnail(database_t *db, int doc_id, int num, size_t *retur
 }
 
 void database_write_index_descriptor(database_t *db, index_descriptor_t *desc) {
+    database_flush_writes(db);
+
 
     sqlite3_exec(db->db, "DELETE FROM descriptor;", NULL, NULL, NULL);
 
@@ -577,6 +588,8 @@ void database_incremental_scan_begin(database_t *db) {
 }
 
 void database_incremental_scan_end(database_t *db) {
+    database_flush_writes(db);
+
     // An archive that has not changed is never re-parsed, so the documents nested inside it are
     // never marked one by one. They are still in the index and still current, so anything below a
     // marked document is marked along with it.
@@ -645,7 +658,35 @@ int database_mark_document(database_t *db, const char *path, int mtime) {
     return FALSE;
 }
 
+// In autocommit each row is its own transaction, which creates, commits and unlinks a
+// rollback journal per document while the workers idle behind it.
+#define WRITE_BATCH_SIZE 1000
+
+static void batch_write_begin(database_t *db) {
+    if (db->uncommitted_writes == 0) {
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "BEGIN;", NULL, NULL, NULL));
+    }
+}
+
+static void batch_write_end(database_t *db) {
+    db->uncommitted_writes += 1;
+    if (db->uncommitted_writes >= WRITE_BATCH_SIZE) {
+        database_flush_writes(db);
+    }
+}
+
+// Must be called before anything that cannot run inside a transaction (VACUUM) or
+// that reads the written rows from another connection.
+void database_flush_writes(database_t *db) {
+    if (db->uncommitted_writes > 0) {
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "COMMIT;", NULL, NULL, NULL));
+        db->uncommitted_writes = 0;
+    }
+}
+
 int database_write_document(database_t *db, document_t *doc, const char *json_data) {
+
+    batch_write_begin(db);
 
     const char *rel_path = doc->filepath + ScanCtx.index.desc.root_len;
     const char *parent_rel_path = doc->parent[0] != '\0'
@@ -674,17 +715,23 @@ int database_write_document(database_t *db, document_t *doc, const char *json_da
     CRASH_IF_STMT_FAIL(sqlite3_step(db->mark_written_document_stmt));
     CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->mark_written_document_stmt));
 
+    batch_write_end(db);
+
     return id;
 }
 
 
 void database_write_thumbnail(database_t *db, int doc_id, int num, void *data, size_t data_size) {
+    batch_write_begin(db);
+
     sqlite3_bind_int(db->write_thumbnail_stmt, 1, doc_id);
     sqlite3_bind_int(db->write_thumbnail_stmt, 2, num);
     sqlite3_bind_blob(db->write_thumbnail_stmt, 3, data, (int) data_size, SQLITE_STATIC);
 
     CRASH_IF_STMT_FAIL(sqlite3_step(db->write_thumbnail_stmt));
     CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->write_thumbnail_stmt));
+
+    batch_write_end(db);
 }
 
 
@@ -723,6 +770,23 @@ cJSON *database_get_document(database_t *db, int doc_id) {
     CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->get_document));
 
     return json;
+}
+
+int database_get_parent_id(database_t *db, int doc_id) {
+    sqlite3_bind_int(db->get_parent_id, 1, doc_id);
+
+    int ret = sqlite3_step(db->get_parent_id);
+    CRASH_IF_STMT_FAIL(ret);
+
+    int parent_id = DATABASE_NO_PARENT;
+
+    if (ret == SQLITE_ROW && sqlite3_column_type(db->get_parent_id, 0) != SQLITE_NULL) {
+        parent_id = sqlite3_column_int(db->get_parent_id, 0);
+    }
+
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->get_parent_id));
+
+    return parent_id;
 }
 
 void database_increment_version(database_t *db) {
