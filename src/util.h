@@ -25,6 +25,9 @@ void progress_bar_print(double percentage, size_t tn_size, size_t index_size);
 
 const char *find_file_in_paths(const char **paths, const char *filename);
 
+/** A unique id for a new index. Indices created within the same second must not collide */
+int random_index_id();
+
 
 /** Bytes str_escape() needs for `str`, terminator included */
 size_t str_escape_size(const char *str);
@@ -33,6 +36,15 @@ size_t str_escape_size(const char *str);
 void str_escape(char *dst, size_t dst_size, const char *str);
 
 void str_unescape(char *dst, const char *str);
+
+/** Forward off the continuation bytes of a UTF-8 sequence an offset landed inside of */
+static inline size_t utf8_boundary(const char *text, size_t offset, size_t len) {
+    while (offset < len && (text[offset] & 0xC0) == 0x80) {
+        offset += 1;
+    }
+
+    return offset;
+}
 
 static inline int hex2buf(const char *str, int len, unsigned char *bytes) {
     static const uint8_t hashmap[] = {

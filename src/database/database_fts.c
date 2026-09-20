@@ -656,7 +656,11 @@ const char *get_sort_var(fts_sort_t sort) {
         case FTS_SORT_ID:
             return "doc.id";
         case FTS_SORT_EMBEDDING:
-            return "cosine_sim(?7, ?8, emb.embedding)";
+            // A document has one embedding per chunk of its content, and ranks by its best one.
+            // -1, not NULL, for a document the model has no embedding for: the sort cursor is
+            // read back as a number.
+            return "COALESCE((SELECT MAX(cosine_sim(?7, ?8, emb.embedding)) FROM embedding emb"
+                   " WHERE emb.id = doc.id AND emb.model_id = ?9), -1)";
         default:
             return NULL;
     }
@@ -709,6 +713,8 @@ char *get_after_where(char **after, UNUSED(fts_sort_t sort), int sort_asc) {
         return NULL;
     }
 
+    // One tuple comparison, so the ROWID tiebreaker in the ORDER BY runs in the same direction:
+    // a descending sort whose sort_var ties would otherwise skip every row of the tie but one
     if (sort_asc) {
         return "(sort_var, doc.ROWID) > (?3, ?4)";
     }
@@ -743,15 +749,43 @@ static database_t *index_database(int index_id) {
 }
 
 /**
+ * The chunk of a document that best matches the query embedding, as a byte range of its .content.
+ * A model with one embedding per document answers with the whole of it (start 0, end NULL).
+ */
+static void best_chunk(sqlite3_stmt *stmt, long long id, long long *start, long long *end) {
+    *start = -1;
+    *end = -1;
+
+    sqlite3_bind_int64(stmt, 1, id);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *start = sqlite3_column_int64(stmt, 0);
+        if (sqlite3_column_type(stmt, 1) != SQLITE_NULL) {
+            *end = sqlite3_column_int64(stmt, 1);
+        }
+    }
+
+    sqlite3_reset(stmt);
+}
+
+/**
  * fts5 cannot build the snippets: a contentless table has no text to quote from. The text is read
  * back from the index database the document came from, for the documents of this page only.
+ *
+ * chunk_start and chunk_end are the byte range of .content the embedding that matched was
+ * generated from, or -1 for the whole of it. The query terms are still marked inside it, so an
+ * embeddings search that also carries a query reads the way a plain one does.
  */
-static void add_highlight(cJSON *row, cJSON *source, long long id, char **terms, int context_size) {
+static void add_highlight(cJSON *row, cJSON *source, long long id, char **terms, int context_size,
+                          long long chunk_start, long long chunk_end) {
+    char *const no_terms[] = {NULL};
+    char *const *use_terms = terms == NULL ? no_terms : terms;
+
     cJSON *highlight = cJSON_AddObjectToObject(row, "highlight");
 
     const cJSON *name = cJSON_GetObjectItem(source, "name");
     if (cJSON_IsString(name)) {
-        char *marked = highlight_text(name->valuestring, terms, NAME_CONTEXT_WORDS);
+        char *marked = highlight_text(name->valuestring, use_terms, NAME_CONTEXT_WORDS);
         if (marked != NULL) {
             cJSON_AddStringToObject(highlight, "name", marked);
             free(marked);
@@ -770,12 +804,38 @@ static void add_highlight(cJSON *row, cJSON *source, long long id, char **terms,
         return;
     }
 
-    char *marked = highlight_text(content, terms, context_size);
+    const size_t content_len = strlen(content);
+
+    // A chunk that does not fall inside the text the document has now — it was written against an
+    // older scan, or by a script that counted something other than bytes — falls back to all of it
+    size_t start = (chunk_start >= 0 && (size_t) chunk_start < content_len) ? (size_t) chunk_start : 0;
+    size_t end = (chunk_end >= 0 && (size_t) chunk_end <= content_len) ? (size_t) chunk_end : content_len;
+
+    if (end <= start) {
+        start = 0;
+        end = content_len;
+    }
+
+    start = utf8_boundary(content, start, content_len);
+    end = utf8_boundary(content, end, content_len);
+
+    if (chunk_start >= 0) {
+        cJSON *chunk = cJSON_AddObjectToObject(row, "chunk");
+        cJSON_AddNumberToObject(chunk, "start", (double) start);
+        cJSON_AddNumberToObject(chunk, "end", (double) end);
+    }
+
+    char *chunk_text = (start == 0 && end == content_len) ? content : strndup(content + start, end - start);
+
+    char *marked = highlight_text(chunk_text, use_terms, context_size);
     if (marked != NULL) {
         cJSON_AddStringToObject(highlight, "content", marked);
         free(marked);
     }
 
+    if (chunk_text != content) {
+        free(chunk_text);
+    }
     free(content);
 }
 
@@ -831,7 +891,9 @@ cJSON *database_fts_search(database_t *db, const char *query, char **paths, long
                                   "'$.thumbnail', doc.thumbnail_count,"
                                   "'$.mime', doc.mime,"
                                   "'$.size', doc.size,"
-                                  "'$.embedding', (CASE WHEN emb.id IS NOT NULL THEN 1 ELSE 0 END))";
+                                  // EXISTS, not a join: a document with several embeddings would
+                                  // otherwise be returned once per embedding row
+                                  "'$.embedding', EXISTS (SELECT 1 FROM embedding WHERE id = doc.id))";
 
     char *sql;
     char *agg_sql = NULL;
@@ -841,7 +903,7 @@ cJSON *database_fts_search(database_t *db, const char *query, char **paths, long
     // SQLite score and sort every match instead: 6.5s versus 0.7s for a term that
     // hits half of a 517k document index. So the ranking runs in a subquery that
     // keeps that exact shape, and everything expensive per row — the JSON, the
-    // embedding join, the json — happens for the N rows it returns.
+    // embedding lookup — happens for the N rows it returns.
     const int ranked = (sort == FTS_SORT_SCORE && query_where != NULL && sort_asc);
 
     if (ranked) {
@@ -863,7 +925,6 @@ cJSON *database_fts_search(database_t *db, const char *query, char **paths, long
                 "        ORDER BY rank"
                 "        LIMIT ?2) top"
                 " INNER JOIN document_index doc on doc.ROWID = top.sid"
-                " LEFT JOIN embedding emb on emb.id = doc.id"
                 " ORDER BY top.rank_var, doc.ROWID",
                 json_object_sql,
                 ranked_where);
@@ -885,13 +946,12 @@ cJSON *database_fts_search(database_t *db, const char *query, char **paths, long
                 " %s, %s as sort_var, doc.ROWID"
                 " FROM search"
                 " INNER JOIN document_index doc on doc.ROWID = search.ROWID"
-                " LEFT JOIN embedding emb on emb.id = doc.id"
                 " WHERE %s"
-                " ORDER BY sort_var%s, doc.ROWID"
+                " ORDER BY sort_var%s, doc.ROWID%s"
                 " LIMIT ?2",
                 json_object_sql, get_sort_var(sort),
                 where,
-                sort_asc ? "" : " DESC");
+                sort_asc ? "" : " DESC", sort_asc ? "" : " DESC");
 
         if (fetch_aggregations) {
             ASPRINTF_OR_FATAL(&agg_sql,
@@ -907,13 +967,12 @@ cJSON *database_fts_search(database_t *db, const char *query, char **paths, long
                 "SELECT"
                 " %s, %s as sort_var, doc.ROWID"
                 " FROM document_index doc"
-                " LEFT JOIN embedding emb on emb.id = doc.id"
                 " WHERE %s"
-                " ORDER BY sort_var%s,doc.ROWID"
+                " ORDER BY sort_var%s, doc.ROWID%s"
                 " LIMIT ?2",
                 json_object_sql, get_sort_var(sort),
                 where,
-                sort_asc ? "" : " DESC");
+                sort_asc ? "" : " DESC", sort_asc ? "" : " DESC");
 
         if (fetch_aggregations) {
             ASPRINTF_OR_FATAL(&agg_sql,
@@ -983,6 +1042,20 @@ cJSON *database_fts_search(database_t *db, const char *query, char **paths, long
 
     char **terms = (highlight && query_where != NULL) ? highlight_query_terms(query) : NULL;
 
+    // An embeddings search shows the chunk that matched rather than the head of the document, and
+    // is worth a query per document of the page to find out which one it was
+    sqlite3_stmt *chunk_stmt = NULL;
+    if (highlight && sort == FTS_SORT_EMBEDDING && embedding != NULL) {
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(
+                db->db,
+                "SELECT start, end FROM embedding WHERE id = ?1 AND model_id = ?2"
+                " ORDER BY cosine_sim(?3, ?4, embedding) DESC LIMIT 1", -1, &chunk_stmt, NULL));
+
+        sqlite3_bind_int(chunk_stmt, 2, model);
+        sqlite3_bind_int(chunk_stmt, 3, embedding_size);
+        sqlite3_bind_blob(chunk_stmt, 4, embedding, (int) sizeof(float) * embedding_size, SQLITE_STATIC);
+    }
+
     cJSON *json = cJSON_CreateObject();
     cJSON *hits_hits = cJSON_CreateArray();
 
@@ -1000,8 +1073,16 @@ cJSON *database_fts_search(database_t *db, const char *query, char **paths, long
         const char *json_str = (const char *) sqlite3_column_text(stmt, 0);
         cJSON *row = cJSON_CreateObject();
         cJSON *source = cJSON_Parse(json_str);
-        if (terms != NULL) {
-            add_highlight(row, source, sqlite3_column_int64(stmt, 2), terms, highlight_context_size);
+        if (terms != NULL || chunk_stmt != NULL) {
+            const long long doc_id = sqlite3_column_int64(stmt, 2);
+
+            long long chunk_start = -1;
+            long long chunk_end = -1;
+            if (chunk_stmt != NULL) {
+                best_chunk(chunk_stmt, doc_id, &chunk_start, &chunk_end);
+            }
+
+            add_highlight(row, source, doc_id, terms, highlight_context_size, chunk_start, chunk_end);
         }
         cJSON *id = cJSON_DetachItemFromObject(source, "_id");
         cJSON_AddItemToObject(row, "_id", id);
@@ -1022,6 +1103,10 @@ cJSON *database_fts_search(database_t *db, const char *query, char **paths, long
 
     sqlite3_finalize(stmt);
     highlight_free_terms(terms);
+
+    if (chunk_stmt != NULL) {
+        sqlite3_finalize(chunk_stmt);
+    }
 
     cJSON *hits = cJSON_AddObjectToObject(json, "hits");
     cJSON_AddItemToObject(hits, "hits", hits_hits);
