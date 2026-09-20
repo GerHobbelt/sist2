@@ -2,7 +2,6 @@
 #define SIST2_CTX_H
 
 #include "sist.h"
-#include "tpool.h"
 #include "src/worker/thread_pool.h"
 #include "libscan/scan.h"
 #include "libscan/arc/arc.h"
@@ -27,10 +26,16 @@
 typedef struct {
     struct index_t index;
 
-    tpool_t *pool;
+    struct scan_master *master;
+
+    /** Command line of this process, replayed to spawn the worker processes */
+    int argc;
+    const char **argv;
 
     int threads;
     int depth;
+    /** Seconds a worker may spend on one file before it is killed and restarted, 0 to disable */
+    int job_timeout;
     int calculate_checksums;
 
     pcre *exclude;
@@ -100,7 +105,6 @@ typedef struct {
 
 typedef struct {
     int thread_id;
-    database_t *ipc_db;
     database_t *index_db;
     /** Document the thumbnails currently being written belong to */
     int last_doc_id;

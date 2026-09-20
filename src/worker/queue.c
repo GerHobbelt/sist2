@@ -15,7 +15,7 @@ typedef struct queue {
     pthread_cond_t not_full;
 } queue_t;
 
-queue_t *queue_create(int capacity) {
+queue_t *queue_create(const int capacity) {
     if (capacity <= 0) {
         LOG_FATALF("queue.c", "Invalid queue capacity: %d", capacity);
     }
@@ -112,6 +112,24 @@ void *queue_try_pop(queue_t *queue) {
     return item;
 }
 
+queue_poll_result_t queue_poll(queue_t *queue, void **item) {
+    pthread_mutex_lock(&queue->mutex);
+
+    queue_poll_result_t result;
+
+    if (queue->count > 0) {
+        *item = queue_take(queue);
+        result = QUEUE_ITEM;
+    } else {
+        *item = NULL;
+        result = queue->closed ? QUEUE_DONE : QUEUE_EMPTY;
+    }
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    return result;
+}
+
 void queue_close(queue_t *queue) {
     pthread_mutex_lock(&queue->mutex);
 
@@ -124,7 +142,7 @@ void queue_close(queue_t *queue) {
 
 int queue_is_closed(queue_t *queue) {
     pthread_mutex_lock(&queue->mutex);
-    int closed = queue->closed;
+    const int closed = queue->closed;
     pthread_mutex_unlock(&queue->mutex);
 
     return closed;
@@ -132,7 +150,7 @@ int queue_is_closed(queue_t *queue) {
 
 int queue_size(queue_t *queue) {
     pthread_mutex_lock(&queue->mutex);
-    int count = queue->count;
+    const int count = queue->count;
     pthread_mutex_unlock(&queue->mutex);
 
     return count;

@@ -5,24 +5,44 @@
 #include "src/ctx.h"
 #include "src/parsing/parse.h"
 
-static void send_frame(uint32_t type, char *payload, uint32_t len) {
-    int ret = frame_write(WORKER_OUT_FD, type, payload, len);
+#include <signal.h>
+
+/** The document the next thumbnails belong to was dropped */
+static int last_document_dropped = FALSE;
+
+/**
+ * @return 0 on success, -1 if the frame was too big and was dropped.
+ */
+static int send_frame(const uint32_t type, char *payload, const uint32_t len) {
+    if (len > FRAME_MAX_PAYLOAD) {
+        // Losing one document beats the master killing the scan over it
+        LOG_WARNINGF("worker.c", "Dropping a %u byte frame, over the %d byte protocol limit",
+                     len, FRAME_MAX_PAYLOAD);
+        free(payload);
+        return -1;
+    }
+
+    const int ret = frame_write(WORKER_OUT_FD, type, payload, len);
     free(payload);
 
     if (ret != 0) {
         // The master is gone; there is nothing left to do and nobody to report it to
         exit(0);
     }
+
+    return 0;
 }
 
-static int worker_mark_document(const char *rel_path, int mtime) {
+static int worker_mark_document(const char *rel_path, const int mtime) {
     // Both buffers are SIST_PATH_MAX, and rel_path is an offset into an even shorter one
     proto_mark_t mark = {.mtime = mtime};
     strcpy(mark.path, rel_path);
 
     uint32_t len;
     char *payload = proto_encode_mark(&mark, &len);
-    send_frame(FRAME_REQ_MARK, payload, len);
+    if (send_frame(FRAME_REQ_MARK, payload, len) != 0) {
+        return FALSE;
+    }
 
     frame_t frame;
     if (frame_read(WORKER_IN_FD, &frame) != 0) {
@@ -55,10 +75,19 @@ static void worker_write_document(document_t *doc, const char *json) {
 
     uint32_t len;
     char *payload = proto_encode_doc(&proto_doc, &len);
-    send_frame(FRAME_DOC, payload, len);
+    last_document_dropped = send_frame(FRAME_DOC, payload, len) != 0;
+
+    if (last_document_dropped) {
+        LOG_WARNINGF("worker.c", "Document is too large to be indexed: %s", doc->filepath);
+    }
 }
 
-static void worker_write_thumbnail(int index, const void *data, size_t size) {
+static void worker_write_thumbnail(const int index, const void *data, const size_t size) {
+    if (last_document_dropped) {
+        // The master would attach these to the previous document
+        return;
+    }
+
     uint32_t len;
     char *payload = proto_encode_thumb(index, data, size, &len);
     send_frame(FRAME_THUMB, payload, len);
@@ -75,13 +104,44 @@ static const document_sink_t WorkerSink = {
         .set_current_job = worker_set_current_job,
 };
 
+/**
+ * Test hooks: make the worker die, exit or hang on a chosen file. They stand in for the malformed
+ * documents that make a parser segfault or spin, which are hard to keep around as fixtures.
+ */
+static int triggered_by(const char *variable, const char *path) {
+    const char *trigger = getenv(variable);
+
+    return trigger != NULL && *trigger != '\0' && strstr(path, trigger) != NULL;
+}
+
+static void maybe_misbehave_for_test(const char *path) {
+    if (triggered_by("SIST2_CRASH_ON_FILE", path)) {
+        raise(SIGSEGV);
+    }
+
+    // A plain exit(), as a parser calling it on its own would: the job is lost either way
+    if (triggered_by("SIST2_EXIT_ON_FILE", path)) {
+        exit(0);
+    }
+
+    if (triggered_by("SIST2_HANG_ON_FILE", path)) {
+        while (TRUE) {
+            sleep(3600);
+        }
+    }
+}
+
 void worker_run() {
     DocumentSink = &WorkerSink;
+
+    // A master that went away should end this process through the EOF path below, not through a
+    // signal raised in the middle of writing a document
+    signal(SIGPIPE, SIG_IGN);
 
     while (TRUE) {
         frame_t frame;
 
-        int ret = frame_read(WORKER_IN_FD, &frame);
+        const int ret = frame_read(WORKER_IN_FD, &frame);
         if (ret != 0) {
             // Clean EOF means the master exited without saying goodbye; either way we are done
             break;
@@ -101,6 +161,8 @@ void worker_run() {
             LOG_FATAL("worker.c", "FIXME: malformed JOB frame");
         }
         frame_free(&frame);
+
+        maybe_misbehave_for_test(job.path);
 
         parse_job_t *parse_job = create_parse_job(job.path, job.mtime, job.size);
         parse(parse_job);

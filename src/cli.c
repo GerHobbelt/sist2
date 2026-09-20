@@ -145,8 +145,12 @@ int scan_args_validate(scan_args_t *args, int argc, const char **argv) {
         args->output = expandpath(args->output);
     }
 
+    // Worker processes are spawned once the master has created the index, so for them an existing
+    // index file is the normal case rather than an error
     char *abs_output = abspath(args->output);
-    if (args->incremental && abs_output == NULL) {
+    if (args->worker) {
+        // Nothing to check
+    } else if (args->incremental && abs_output == NULL) {
         LOG_WARNINGF("main.c",
                      "Could not open original index for incremental scan: %s. Will not perform incremental scan.",
                      args->output);
@@ -274,7 +278,8 @@ int scan_args_validate(scan_args_t *args, int argc, const char **argv) {
         args->max_memory_buffer_mib = DEFAULT_MAX_MEM_BUFFER;
     }
 
-    if (args->list_path != OPTION_VALUE_UNSPECIFIED) {
+    // Only the master walks the list
+    if (args->list_path != OPTION_VALUE_UNSPECIFIED && !args->worker) {
         if (strcmp(args->list_path, "-") == 0) {
             args->list_file = stdin;
             LOG_DEBUG("cli.c", "Using stdin as list file");

@@ -12,11 +12,14 @@ import {humanDate, humanFileSize} from "@/util";
 
 function makeGpsLink(latitude, longitude) {
 
-  if (isNaN(latitude) || isNaN(longitude)) {
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+
+  if (!isFinite(lat) || !isFinite(lon)) {
     return "";
   }
 
-  return `<a target="_blank" href="https://maps.google.com/?q=${latitude},${longitude}&ll=${latitude},${longitude}&t=k&z=17">${latitude}, ${longitude}</a>`;
+  return `<a target="_blank" href="https://maps.google.com/?q=${lat},${lon}&ll=${lat},${lon}&t=k&z=17">${lat}, ${lon}</a>`;
 }
 
 function dmsToDecimal(dms, ref) {
@@ -32,14 +35,17 @@ function dmsToDecimal(dms, ref) {
 export default {
   name: "InfoTable",
   props: ["doc"],
-  data() {
-    return {
-      indexName: "loading..."
-    }
-  },
   computed: {
+    indexName() {
+      const index = this.$store.getters.indexMap[this.doc._source.index];
+
+      if (index === undefined) {
+        return "";
+      }
+
+      return index.name;
+    },
     tableItems() {
-      this.indexName;
       const src = this.doc._source;
 
       const items = [
@@ -96,15 +102,6 @@ export default {
 
       return items;
     }
-  },
-  mounted() {
-    if (this.$store.getters.indexMap[this.doc.index]) {
-      this.indexName = this.$store.getters.indexMap[this.doc._source.index].name
-    }
-
-    window.setTimeout(() => {
-      this.indexName = this.$store.getters.indexMap[this.doc._source.index].name
-    }, 500)
   },
 }
 </script>

@@ -1,14 +1,31 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(sist2)
-set(CMAKE_C_STANDARD 11)
-
 option(SIST_DEBUG "Build a debug executable" on)
 option(SIST_FAST "Enable more optimisation flags" off)
 option(SIST_DEBUG_INFO "Turn on debug information in web interface" on)
 option(SIST_STATIC "Produce a fully static executable (musl only)" off)
 option(BUILD_TESTS "Build the test binaries" on)
 option(SIST_COVERAGE "Instrument libscan and sist2_core for gcov coverage" off)
+
+# Both of these have to be decided before project(), which is what runs the vcpkg toolchain:
+# VCPKG_BUILD_TYPE picks which half of every port gets built, and the toolchain searches
+# debug/lib first whenever CMAKE_BUILD_TYPE is Debug *or unset* — leaving the build type unset
+# links the optimized binary against -O0 mupdf, freetype and harfbuzz, which costs ~1.8x on PDF
+# parsing and leaves MuPDF's assert()s live in production.
+if (SIST_DEBUG)
+    set(VCPKG_BUILD_TYPE debug)
+    set(SIST_DEFAULT_BUILD_TYPE Debug)
+else ()
+    set(VCPKG_BUILD_TYPE release)
+    set(SIST_DEFAULT_BUILD_TYPE Release)
+endif ()
+
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE ${SIST_DEFAULT_BUILD_TYPE} CACHE STRING "Build type" FORCE)
+endif ()
+
+project(sist2)
+set(CMAKE_C_STANDARD 11)
 
 add_compile_definitions(
         "SIST_PLATFORM=${SIST_PLATFORM}"
@@ -18,9 +35,6 @@ if (SIST_DEBUG)
     add_compile_definitions(
             "SIST_DEBUG=${SIST_DEBUG}"
     )
-    set(VCPKG_BUILD_TYPE debug)
-else ()
-    set(VCPKG_BUILD_TYPE release)
 endif ()
 
 if (SIST_DEBUG_INFO)
@@ -88,7 +102,6 @@ add_library(
 
         src/sist.h
         src/io/walk.h src/io/walk.c
-        src/tpool.h src/tpool.c
         src/parsing/parse.h src/parsing/parse.c
         src/parsing/magic_util.c src/parsing/magic_util.h
         src/io/serialize.h src/io/serialize.c
@@ -119,7 +132,8 @@ add_library(
         src/worker/thread_pool.c src/worker/thread_pool.h
         src/worker/protocol.c src/worker/protocol.h
         src/worker/sink.c src/worker/sink.h
-        src/worker/worker.c src/worker/worker.h)
+        src/worker/worker.c src/worker/worker.h
+        src/worker/master.c src/worker/master.h)
 set_target_properties(sist2_core PROPERTIES LINKER_LANGUAGE C)
 
 add_executable(sist2 src/main.c)
@@ -152,15 +166,17 @@ find_package(LibXml2 REQUIRED)
 find_package(LibLZMA REQUIRED)
 find_package(unofficial-pcre CONFIG REQUIRED)
 
-find_library(JBIG2DEC_LIB NAMES jbig2decd jbig2dec)
-find_library(HARFBUZZ_LIB NAMES harfbuzz harfbuzzd)
+# NAMES_PER_DIR: try every spelling in one directory before moving on, so the debug/release
+# search order the toolchain set up decides which one wins, not the order of the names
+find_library(JBIG2DEC_LIB NAMES jbig2dec jbig2decd NAMES_PER_DIR)
+find_library(HARFBUZZ_LIB NAMES harfbuzz harfbuzzd NAMES_PER_DIR)
 find_library(LZO2_LIB NAMES lzo2)
 
 find_library(MUPDF_LIB NAMES libmupdf.a REQUIRED)
 find_library(MOBI_LIB NAMES libmobi.a mobi REQUIRED)
-find_library(ANTIWORD_LIB NAMES libantiword.a antiword REQUIRED)
+find_library(ANTIWORD2_LIB NAMES libantiword2.a antiword2 REQUIRED)
 find_path(MOBI_INCLUDE_DIR mobi.h REQUIRED)
-find_path(ANTIWORD_INCLUDE_DIR antiword/antiword.h REQUIRED)
+find_path(ANTIWORD2_INCLUDE_DIR antiword2.h REQUIRED)
 find_path(UTF8H_INCLUDE_DIR utf8h/utf8.h REQUIRED)
 find_library(CMS_LIB NAMES lcms2)
 find_library(JAS_LIB NAMES jasper)
@@ -197,7 +213,7 @@ list(REMOVE_ITEM FFMPEG_LIBRARIES /usr/lib/x86_64-linux-gnu/libm.a)
 list(REMOVE_ITEM FFMPEG_LIBRARIES /usr/lib/aarch64-linux-gnu/libm.a)
 
 #
-# Per-configuration compile flags (shared by scan, sist2 and antiword)
+# Per-configuration compile flags (shared by scan and sist2)
 #
 # -Wmissing-field-initializers excluded: omitted fields are guaranteed zero-initialized,
 # and the vendored argparse OPT_*() variadic macros cannot pad trailing fields
@@ -212,8 +228,6 @@ target_compile_options(sist2_core PRIVATE ${SIST_WARNING_OPTIONS})
 target_compile_options(sist2 PRIVATE ${SIST_WARNING_OPTIONS})
 
 if (SIST_DEBUG)
-    # antiword.h requires exactly one of DEBUG/NDEBUG
-    target_compile_definitions(scan PRIVATE DEBUG)
     set(SIST_SANITIZE_OPTIONS
             -g
             -fstack-protector
@@ -313,7 +327,7 @@ target_link_libraries(
         ${JAS_LIB}
         ${GUMBO_LIB}
 
-        ${ANTIWORD_LIB}
+        ${ANTIWORD2_LIB}
         ${MOBI_LIB}
         unofficial::pcre::pcre unofficial::pcre::pcre16 unofficial::pcre::pcre32 unofficial::pcre::pcrecpp
         leptonica
@@ -336,7 +350,7 @@ target_include_directories(
         ${LIBXML2_INCLUDE_DIR}
         ${FFMPEG_INCLUDE_DIR}
         ${MOBI_INCLUDE_DIR}
-        ${ANTIWORD_INCLUDE_DIR}
+        ${ANTIWORD2_INCLUDE_DIR}
         ${UTF8H_INCLUDE_DIR}
         ${WPD_INCLUDE_DIR}
         ${FFMPEG_INCLUDE_DIRS}
