@@ -643,18 +643,18 @@ database_iterator_t *database_create_document_iterator(database_t *db, long long
             "  LEFT JOIN tag t ON t.id = document.id"
             " WHERE document.version > ?"
             " GROUP BY document.id),"
-            // emb.<path> is a single dense_vector, so only the first chunk of a model goes in it
+            // emb.<path> is a single dense_vector, so only the first chunk of a model goes in it.
+            // A correlated subquery rather than a join grouped by document: the GROUP BY sorts
+            // every document's JSON into one temporary b-tree, which is the whole corpus in memory
             " emb_doc (id, j) AS ("
-            "SELECT doc.id, CASE"
-            " WHEN emb.embedding IS NULL THEN j"
-            " ELSE json_set(j,"
-            "  '$.emb', json_group_object(m.path, json(emb_to_json(emb.embedding))),"
-            "  '$.embedding', 1"
-            "     ) END"
-            " FROM doc"
-            " LEFT JOIN embedding emb ON doc.id = emb.id AND emb.start = 0"
-            " LEFT JOIN model m ON emb.model_id = m.id"
-            " GROUP BY doc.id)"
+            "SELECT id, CASE"
+            " WHEN embs = '{}' THEN j"
+            " ELSE json_set(j, '$.emb', json(embs), '$.embedding', 1) END"
+            " FROM (SELECT doc.id AS id, doc.j AS j, ("
+            "  SELECT json_group_object(m.path, json(emb_to_json(emb.embedding)))"
+            "  FROM embedding emb INNER JOIN model m ON emb.model_id = m.id"
+            "  WHERE emb.id = doc.id AND emb.start = 0) AS embs"
+            " FROM doc))"
             // Every chunk of every model is a nested document of its own, so that a kNN search
             // scores the passage that matched and can quote it back
             "SELECT CASE"
