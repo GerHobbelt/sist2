@@ -24,6 +24,8 @@ typedef struct {
 
 #define IS_SUPPORTED_ES_VERSION(es_version) ((es_version) != NULL && VERSION_GE((es_version), 6, 8) && VERSION_LT((es_version), 9, 0))
 #define IS_LEGACY_VERSION(es_version) ((es_version) != NULL && VERSION_LT((es_version), 7, 14))
+// dense_vector fields, and the mappings that declare them, only exist from 7.0 on
+#define HAS_DENSE_VECTOR(es_version) ((es_version) != NULL && VERSION_GE((es_version), 7, 0))
 #define HAS_KNN(es_version) ((es_version) != NULL && VERSION_GE((es_version), 8, 0))
 
 
@@ -56,6 +58,11 @@ void elastic_cleanup();
 void finish_indexer(int index_id);
 
 void elastic_init(int force_reset, const char* user_mappings, const char* user_settings);
+
+/** Source version this Elasticsearch index was last filled from, 0 if it holds nothing yet */
+long long elastic_get_indexed_version(int index_id);
+
+void elastic_set_indexed_version(int index_id, long long version);
 
 cJSON *elastic_get_document(const char *id_str);
 

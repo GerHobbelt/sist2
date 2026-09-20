@@ -56,6 +56,8 @@ Index options
 
 sqlite-index options
     --search-index=<str>              Path to search index. Will be created if it does not exist yet.
+    --rebuild                         Rebuild the whole search index instead of only applying the changes since the last run.
+    --optimize                        Merge the search index into a single b-tree when done. Slow, and rarely worth it.
 
 Web options
     --es-url=<str>                    Elasticsearch url. DEFAULT: http://localhost:9200
@@ -134,13 +136,27 @@ _staging/
 ```bash
 sist2 index --force-reset --batch-size 1000 --es-url http://localhost:9200 ./my_index.sist2
 sist2 index ./my_index.sist2
+
+# Only the documents written by a later scan are pushed again. Use --force-reset to
+# recreate the Elasticsearch index and push everything.
+sist2 scan --incremental -o ./my_index.sist2 /path/to/files
+sist2 index ./my_index.sist2
 ```
 
 #### Index documents to SQLite search backend
+The search index holds no copy of the documents' text: the words are indexed, and the text they
+came from is read back from the index files when a search result needs a highlighted excerpt. Both
+files have to be reachable when `sist2 web` runs. A search index created by sist2 4.0.2 or older
+cannot be updated in place — delete it and let this command rebuild it.
+
 ```bash
 # The search index will be created if it does not exist already
 sist2 sqlite-index ./index1.sist2 --search-index search.sist2
 sist2 sqlite-index ./index2.sist2 --search-index search.sist2
+
+# Re-running it after an incremental scan only re-indexes the documents that changed
+sist2 scan --incremental -o ./index1.sist2 /path/to/files
+sist2 sqlite-index ./index1.sist2 --search-index search.sist2
 ```
 
 **Save index in JSON format**

@@ -1,6 +1,7 @@
 #ifndef SIST2_DATABASE_H
 #define SIST2_DATABASE_H
 
+#include <pthread.h>
 #include <sqlite3.h>
 #include <cjson/cJSON.h>
 #include "src/sist.h"
@@ -47,6 +48,8 @@ typedef struct database {
 
     // Documents and thumbnails written since the last commit; see database_flush_writes()
     int uncommitted_writes;
+    /** The walk thread marks unchanged files while the loop thread writes the changed ones */
+    pthread_mutex_t write_mutex;
 
     // Prepared statements
     sqlite3_stmt *select_thumbnail_stmt;
@@ -54,10 +57,13 @@ typedef struct database {
     sqlite3_stmt *treemap_merge_up_delete_stmt;
 
     sqlite3_stmt *mark_document_stmt;
+    /** Same statement, for the walk thread: two threads may not step one statement */
+    sqlite3_stmt *mark_walked_document_stmt;
     sqlite3_stmt *mark_written_document_stmt;
     sqlite3_stmt *write_document_stmt;
     sqlite3_stmt *write_thumbnail_stmt;
     sqlite3_stmt *get_document;
+    sqlite3_stmt *get_content;
     sqlite3_stmt *get_parent_id;
     sqlite3_stmt *get_models;
     sqlite3_stmt *get_embedding;
@@ -101,6 +107,10 @@ void database_close(database_t *, int optimize);
 
 void database_increment_version(database_t *db);
 
+long long database_get_version(database_t *db);
+
+char *database_get_content(database_t *db, int doc_id);
+
 void database_write_thumbnail(database_t *db, int doc_id, int num, void *data, size_t data_size);
 
 void *database_read_thumbnail(database_t *db, int doc_id, int num, size_t *return_value_len);
@@ -113,7 +123,7 @@ int database_write_document(database_t *db, document_t *doc, const char *json_da
 
 void database_flush_writes(database_t *db);
 
-database_iterator_t *database_create_document_iterator(database_t *db);
+database_iterator_t *database_create_document_iterator(database_t *db, long long min_version);
 
 void emb_to_json_func(sqlite3_context *ctx, int argc, sqlite3_value **argv);
 
@@ -135,6 +145,8 @@ void database_incremental_scan_begin(database_t *db);
 void database_incremental_scan_end(database_t *db);
 
 int database_mark_document(database_t *db, const char *id, int mtime);
+
+int database_mark_walked_document(database_t *db, const char *id, int mtime);
 
 database_iterator_t *database_create_treemap_iterator(database_t *db, long threshold);
 
@@ -168,7 +180,7 @@ cJSON *database_get_stats(database_t *db, database_stat_type_d type);
 
 void database_fts_attach(database_t *db, const char *fts_database_path);
 
-void database_fts_index(database_t *db);
+void database_fts_index(database_t *db, int rebuild);
 
 void database_fts_optimize(database_t *db);
 

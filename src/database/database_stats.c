@@ -58,6 +58,11 @@ treemap_row_t database_treemap_iter(database_iterator_t *iter) {
 void database_generate_stats(database_t *db, double treemap_threshold) {
     database_flush_writes(db);
 
+    // An index database created by an older version does not have it
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+            db->db,
+            "CREATE INDEX IF NOT EXISTS document_stats_idx ON document(parent, path, size, mtime, mime);",
+            NULL, NULL, NULL));
 
     LOG_INFO("database.c", "Generating stats");
 
@@ -69,6 +74,13 @@ void database_generate_stats(database_t *db, double treemap_threshold) {
     CRASH_IF_NOT_SQLITE_OK(
             sqlite3_exec(db->db, "CREATE TEMP TABLE tm(path TEXT PRIMARY KEY, size INT);", NULL, NULL, NULL));
 
+    // The aggregates below group the same rows four different ways. Reading the three columns they
+    // need once, into a table small enough to stay in memory, turns four scans of the document
+    // index into one — the scans are what the whole step costs, and they are read from disk.
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+            db->db, "CREATE TEMP TABLE doc_summary AS SELECT size, mtime, mime FROM document;",
+            NULL, NULL, NULL));
+
     sqlite3_prepare_v2(db->db, "UPDATE tm SET size=size+? WHERE path=?;", -1, &db->treemap_merge_up_update_stmt, NULL);
     sqlite3_prepare_v2(db->db, "DELETE FROM tm WHERE path = ?;", -1, &db->treemap_merge_up_delete_stmt, NULL);
 
@@ -78,7 +90,7 @@ void database_generate_stats(database_t *db, double treemap_threshold) {
                                " SELECT"
                                "  cast(size / ?1 as int) * ?1 as bucket,"
                                "  count(*) as count"
-                               " FROM document"
+                               " FROM doc_summary"
                                " GROUP BY bucket", -1, &stmt, NULL);
     sqlite3_bind_int(stmt, 1, SIZE_BUCKET);
     CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
@@ -90,7 +102,7 @@ void database_generate_stats(database_t *db, double treemap_threshold) {
                                " SELECT"
                                "  cast(mtime / ?1 as int) * ?1 as bucket,"
                                "  count(*) as count"
-                               " FROM document"
+                               " FROM doc_summary"
                                " GROUP BY bucket", -1, &stmt, NULL);
     sqlite3_bind_int(stmt, 1, DATE_BUCKET);
     CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
@@ -103,7 +115,7 @@ void database_generate_stats(database_t *db, double treemap_threshold) {
                                "  m.name as bucket,"
                                "  sum(size),"
                                "  count(*)"
-                               " FROM document INNER JOIN mime m ON m.id=document.mime"
+                               " FROM doc_summary INNER JOIN mime m ON m.id=doc_summary.mime"
                                " WHERE bucket IS NOT NULL"
                                " GROUP BY bucket", -1, &stmt, NULL);
     CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
@@ -111,7 +123,7 @@ void database_generate_stats(database_t *db, double treemap_threshold) {
     sqlite3_finalize(stmt);
 
     // Treemap
-    sqlite3_prepare_v2(db->db, "SELECT SUM(size) FROM document;", -1, &stmt, NULL);
+    sqlite3_prepare_v2(db->db, "SELECT SUM(size) FROM doc_summary;", -1, &stmt, NULL);
     CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
     long total_size = sqlite3_column_int64(stmt, 0);
     long threshold = (long) ((double) total_size * treemap_threshold);
@@ -161,6 +173,8 @@ void database_generate_stats(database_t *db, double treemap_threshold) {
     CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db,
                                         "INSERT INTO stats_treemap (path, size) SELECT path,size FROM tm;",
                                         NULL, NULL, NULL));
+
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "DROP TABLE doc_summary;", NULL, NULL, NULL));
 
     LOG_INFO("database.c", "Done!");
 }

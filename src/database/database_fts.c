@@ -1,5 +1,9 @@
 #include "database.h"
 #include "src/ctx.h"
+#include "src/web/highlight.h"
+
+// A name is a few words, and all of them belong in the highlight
+#define NAME_CONTEXT_WORDS 64
 
 void database_fts_detach(database_t *db) {
     CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
@@ -21,6 +25,32 @@ void database_fts_attach(database_t *db, const char *fts_database_path) {
 
     CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
     sqlite3_finalize(stmt);
+
+    // Unqualified PRAGMAs only reach the main database, so the attached search
+    // index keeps the default synchronous=FULL and fsyncs its way through the
+    // whole FTS build.
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "PRAGMA fts.synchronous = OFF;",
+                                        NULL, NULL, NULL));
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "PRAGMA fts.journal_mode = MEMORY;",
+                                        NULL, NULL, NULL));
+
+    // A search index built before the text moved out of it keeps its own copy of every document,
+    // and fts5 will not change the shape of an existing table
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(
+            db->db, "SELECT sql FROM fts.sqlite_master WHERE name = 'search'", -1, &stmt, NULL));
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *sql = (const char *) sqlite3_column_text(stmt, 0);
+
+        if (sql != NULL && strstr(sql, "content=''") == NULL) {
+            sqlite3_finalize(stmt);
+            LOG_FATALF("database_fts.c",
+                       "Search index %s was built by an older version of sist2. Delete it and run "
+                       "sqlite-index again to rebuild it.", fts_database_path);
+        }
+    }
+
+    sqlite3_finalize(stmt);
 }
 
 int database_fts_get_max_path_depth(database_t *db) {
@@ -35,12 +65,160 @@ int database_fts_get_max_path_depth(database_t *db) {
     return max_depth;
 }
 
-void database_fts_index(database_t *db) {
+static long long fts_scalar(database_t *db, const char *sql, long long fallback) {
+    sqlite3_stmt *stmt;
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(db->db, sql, -1, &stmt, NULL));
 
-    LOG_INFO("database_fts.c", "Creating content table");
+    long long value = fallback;
+    int ret = sqlite3_step(stmt);
+    CRASH_IF_STMT_FAIL(ret);
 
-    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+    if (ret == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+        value = sqlite3_column_int64(stmt, 0);
+    }
+
+    sqlite3_finalize(stmt);
+
+    return value;
+}
+
+static void fts_exec_with_version(database_t *db, const char *sql, long long version) {
+    sqlite3_stmt *stmt;
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(db->db, sql, -1, &stmt, NULL));
+    sqlite3_bind_int64(stmt, 1, version);
+    CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
+    sqlite3_finalize(stmt);
+}
+
+static void fts_set_state(database_t *db, long long version, int dirty, long long documents) {
+    sqlite3_stmt *stmt;
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(
             db->db,
+            "INSERT INTO fts.index_state (index_id, version, dirty, documents)"
+            " VALUES ((SELECT id FROM descriptor), ?, ?, ?)"
+            " ON CONFLICT (index_id) DO UPDATE SET version=excluded.version, dirty=excluded.dirty,"
+            "  documents=excluded.documents",
+            -1, &stmt, NULL));
+    sqlite3_bind_int64(stmt, 1, version);
+    sqlite3_bind_int(stmt, 2, dirty);
+    sqlite3_bind_int64(stmt, 3, documents);
+    CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
+    sqlite3_finalize(stmt);
+}
+
+void database_fts_index(database_t *db, int rebuild) {
+
+    // An index database created by an older version does not have it, and finding the changed
+    // documents without it means scanning the whole document table
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+            db->db, "CREATE INDEX IF NOT EXISTS document_version_idx ON document(version);",
+            NULL, NULL, NULL));
+
+    long long source_version = fts_scalar(db, "SELECT max(id) FROM version", 0);
+    long long indexed_version = fts_scalar(
+            db,
+            "SELECT version FROM fts.index_state"
+            " WHERE index_id = (SELECT id FROM descriptor) AND dirty = 0",
+            0);
+    long long own_documents = fts_scalar(
+            db, "SELECT documents FROM fts.index_state WHERE index_id = (SELECT id FROM descriptor)", 0);
+    long long all_documents = fts_scalar(db, "SELECT sum(documents) FROM fts.index_state", 0);
+
+    // Documents keep the version of the scan that last wrote them, so anything above the version
+    // this search index was built from is what needs to be re-tokenised.
+    int incremental = !rebuild && indexed_version > 0 && indexed_version <= source_version;
+
+    if (!incremental) {
+        indexed_version = 0;
+    }
+
+    fts_set_state(db, indexed_version, TRUE, own_documents);
+
+    long long changed = 0;
+
+    if (incremental) {
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+                db->db,
+                "CREATE TEMP TABLE fts_changed (id INTEGER PRIMARY KEY);", NULL, NULL, NULL));
+
+        fts_exec_with_version(
+                db,
+                "INSERT INTO fts_changed (id)"
+                " SELECT ((SELECT id FROM descriptor) << 32) | id FROM document WHERE version > ?",
+                indexed_version);
+
+        changed = fts_scalar(db, "SELECT count(*) FROM fts_changed", 0);
+
+        // Deleting a row one at a time costs more than re-tokenising it, so past a certain share of
+        // the index it is cheaper to throw the whole search table away and start over.
+        if (changed * 2 > all_documents) {
+            LOG_DEBUGF("database_fts.c", "%lld of %lld documents changed, rebuilding instead",
+                       changed, all_documents);
+            incremental = FALSE;
+            indexed_version = 0;
+
+            CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "DROP TABLE fts_changed;", NULL, NULL, NULL));
+        }
+    }
+
+    if (!incremental) {
+        changed = fts_scalar(db, "SELECT count(*) FROM document WHERE version > 0", 0);
+    }
+
+    LOG_INFOF("database_fts.c", "Creating content table (%s, source version %lld, indexed version %lld)",
+              incremental ? "incremental" : "full", source_version, indexed_version);
+
+    long long new_documents = 0;
+
+    if (incremental) {
+        new_documents = fts_scalar(
+                db,
+                "SELECT count(*) FROM fts_changed"
+                " WHERE NOT EXISTS (SELECT 1 FROM fts.document_index d WHERE d.id = fts_changed.id)", 0);
+
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+                db->db,
+                "INSERT OR IGNORE INTO fts_changed (id)"
+                " SELECT ((SELECT id FROM descriptor) << 32) | id FROM delete_list;", NULL, NULL, NULL));
+
+        changed = fts_scalar(db, "SELECT count(*) FROM fts_changed", 0);
+
+        if (changed == 0) {
+            LOG_INFO("database_fts.c", "Search index is up to date");
+
+            CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "DROP TABLE fts_changed;", NULL, NULL, NULL));
+            fts_set_state(db, source_version, FALSE, own_documents);
+            return;
+        }
+
+        LOG_DEBUG("database_fts.c", "Removing changed documents from the search index");
+
+        // Only the rows that are actually in the index: a tombstone for a row fts5 never saw
+        // would stay there forever.
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+                db->db,
+                "DELETE FROM search WHERE rowid IN ("
+                " SELECT id FROM fts_changed WHERE id IN (SELECT id FROM fts.document_index));",
+                NULL, NULL, NULL));
+    } else {
+        // Merging while the whole corpus is being inserted is wasted work: the segments it merges
+        // are superseded seconds later. Off for the bulk load, back to the fts5 default after it,
+        // so the incremental runs that follow keep the segment count in check.
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+                db->db, "INSERT INTO search(search, rank) VALUES ('automerge', 0)",
+                NULL, NULL, NULL));
+
+        // Only this index: the other indices in a shared search database were built from source
+        // databases that are not attached here, so their rows could not be inserted back.
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+                db->db,
+                "DELETE FROM search WHERE rowid IN ("
+                " SELECT id FROM fts.document_index WHERE index_id = (SELECT id FROM descriptor));",
+                NULL, NULL, NULL));
+    }
+
+    fts_exec_with_version(
+            db,
             "WITH docs AS ("
             " SELECT "
             "  ((SELECT id FROM descriptor) << 32) | document.id as id,"
@@ -51,16 +229,18 @@ void database_fts_index(database_t *db) {
             "  mtime,"
             "  m.name as mime,"
             "  thumbnail_count,"
-            "  document.json_data"
+            // The text is what the search index is built from, not what it stores
+            "  json_remove(document.json_data, '$.content')"
             " FROM document"
             " LEFT JOIN mime m ON m.id=document.mime"
+            " WHERE document.version > ?"
             " )"
             " INSERT"
             " INTO fts.document_index (id, index_id, size, name, path, mtime, mime, thumbnail_count, json_data)"
             " SELECT * FROM docs WHERE true"
             " on conflict (id) do update set "
             "  size=excluded.size, mtime=excluded.mtime, mime=excluded.mime, json_data=excluded.json_data;",
-            NULL, NULL, NULL));
+            indexed_version);
 
     LOG_DEBUG("database_fts.c", "Copying embeddings");
 
@@ -69,11 +249,12 @@ void database_fts_index(database_t *db) {
             "REPLACE INTO fts.model (id, size)"
             " SELECT id, size FROM model", NULL, NULL, NULL));
 
-    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
-            db->db,
+    fts_exec_with_version(
+            db,
             "REPLACE INTO fts.embedding (id, model_id, start, end, embedding)"
             " SELECT (SELECT id FROM descriptor) << 32 | id, model_id, start, end, embedding FROM embedding "
-            " WHERE TRUE ON CONFLICT (id, model_id, start) DO NOTHING;", NULL, NULL, NULL));
+            " WHERE id IN (SELECT id FROM document WHERE version > ?)"
+            " ON CONFLICT (id, model_id, start) DO NOTHING;", indexed_version);
 
     // TODO: delete old embeddings
 
@@ -82,9 +263,11 @@ void database_fts_index(database_t *db) {
     CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
             db->db,
             "DELETE FROM fts.document_index"
-            " WHERE id IN (SELECT id FROM delete_list)"
-            "  AND index_id = (SELECT id FROM descriptor);",
+            " WHERE index_id = (SELECT id FROM descriptor)"
+            "  AND id IN (SELECT ((SELECT id FROM descriptor) << 32) | id FROM delete_list);",
             NULL, NULL, NULL));
+
+    long long deleted_documents = sqlite3_changes(db->db);
 
     LOG_DEBUG("database_fts.c", "Generating summary stats");
     CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
@@ -124,8 +307,8 @@ void database_fts_index(database_t *db) {
     CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
             db->db,
             "INSERT INTO path_tmp (path, index_id, count, depth)"
-            " SELECT path, index_id, count(*), CASE WHEN length(json_data->>'path') == 0 THEN 0"
-            " ELSE 1 + length(json_data->>'path') - length(REPLACE(json_data->>'path', '/', ''))"
+            " SELECT path, index_id, count(*), CASE WHEN length(path) == 0 THEN 0"
+            " ELSE 1 + length(path) - length(REPLACE(path, '/', ''))"
             " END as depth FROM document_index WHERE depth > 0"
             " GROUP BY path", NULL, NULL, NULL));
 
@@ -146,6 +329,8 @@ void database_fts_index(database_t *db) {
         CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
 
         LOG_DEBUGF("database_fts.c", "Path index depth %d (%d)", i, sqlite3_changes(db->db));
+
+        sqlite3_finalize(stmt);
     }
 
     CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
@@ -156,15 +341,28 @@ void database_fts_index(database_t *db) {
 
     LOG_DEBUG("database_fts.c", "Generating search index");
 
-    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
-            db->db, "INSERT INTO search(search) VALUES ('delete-all')",
-            NULL, NULL, NULL));
+    fts_exec_with_version(
+            db,
+            "INSERT INTO search(rowid, name, content, title, path)"
+            " SELECT ((SELECT id FROM descriptor) << 32) | id,"
+            "  json_data ->> 'name', json_data ->> 'content',"
+            "  json_data ->> 'title', json_data ->> 'path'"
+            " FROM document WHERE version > ?", indexed_version);
 
-    CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
-            db->db,
-            "INSERT INTO search(rowid, name, content, title, path) "
-            "SELECT id, name, content, title, path from document_view",
-            NULL, NULL, NULL));
+    if (!incremental) {
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+                db->db, "INSERT INTO search(search, rank) VALUES ('automerge', 4)",
+                NULL, NULL, NULL));
+    }
+
+    if (incremental) {
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "DROP TABLE fts_changed;", NULL, NULL, NULL));
+    }
+
+    // A full run indexed every document of this index, so the changed set is the document count.
+    long long documents = incremental ? own_documents + new_documents - deleted_documents : changed;
+
+    fts_set_state(db, source_version, FALSE, documents);
 }
 
 void database_fts_optimize(database_t *db) {
@@ -415,7 +613,9 @@ const char *path_where_clause(const char *path) {
         return NULL;
     }
 
-    return "(path = @path or path GLOB @path_glob)";
+    // Qualified: the fts5 search table also has a path column, and an unqualified
+    // reference is ambiguous in every query that joins the two.
+    return "(doc.path = @path or doc.path GLOB @path_glob)";
 }
 
 const char *get_sort_var(fts_sort_t sort) {
@@ -475,6 +675,14 @@ database_summary_stats_t database_fts_get_date_range(database_t *db) {
     return stats;
 }
 
+// The ranked subquery has no sort_var alias, and only ever sorts ascending.
+static const char *get_ranked_after_where(char **after) {
+    if (after == NULL) {
+        return NULL;
+    }
+    return "(rank, doc.ROWID) > (?3, ?4)";
+}
+
 char *get_after_where(char **after, UNUSED(fts_sort_t sort), int sort_asc) {
     if (after == NULL) {
         return NULL;
@@ -500,6 +708,54 @@ int database_fts_get_model_size(database_t *db, int model_id) {
     sqlite3_reset(db->fts_model_size);
 
     return size;
+}
+
+/** The database the documents of an index live in, or NULL when it is not loaded */
+static database_t *index_database(int index_id) {
+    for (int i = 0; i < WebCtx.index_count; i++) {
+        if (WebCtx.indices[i].desc.id == index_id) {
+            return WebCtx.indices[i].db;
+        }
+    }
+
+    return NULL;
+}
+
+/**
+ * fts5 cannot build the snippets: a contentless table has no text to quote from. The text is read
+ * back from the index database the document came from, for the documents of this page only.
+ */
+static void add_highlight(cJSON *row, cJSON *source, long long id, char **terms, int context_size) {
+    cJSON *highlight = cJSON_AddObjectToObject(row, "highlight");
+
+    const cJSON *name = cJSON_GetObjectItem(source, "name");
+    if (cJSON_IsString(name)) {
+        char *marked = highlight_text(name->valuestring, terms, NAME_CONTEXT_WORDS);
+        if (marked != NULL) {
+            cJSON_AddStringToObject(highlight, "name", marked);
+            free(marked);
+        }
+    }
+
+    const cJSON *index_id = cJSON_GetObjectItem(source, "index");
+    database_t *index_db = cJSON_IsNumber(index_id) ? index_database(index_id->valueint) : NULL;
+
+    if (index_db == NULL) {
+        return;
+    }
+
+    char *content = database_get_content(index_db, (int) (id & 0xFFFFFFFF));
+    if (content == NULL) {
+        return;
+    }
+
+    char *marked = highlight_text(content, terms, context_size);
+    if (marked != NULL) {
+        cJSON_AddStringToObject(highlight, "content", marked);
+        free(marked);
+    }
+
+    free(content);
 }
 
 cJSON *database_fts_search(database_t *db, const char *query, const char *path, long size_min,
@@ -537,7 +793,7 @@ cJSON *database_fts_search(database_t *db, const char *query, const char *path, 
         sort = FTS_SORT_ID;
     }
 
-    char *agg_where;
+    char *agg_where = NULL;
     char *where = build_where_clause(path_where, size_where, date_where, index_id_where, mime_where, query_where,
                                      after_where, tags_where);
     if (fetch_aggregations) {
@@ -545,31 +801,60 @@ cJSON *database_fts_search(database_t *db, const char *query, const char *path, 
                                        NULL, tags_where);
     }
 
-    const char *json_object_sql;
-    if (highlight && query_where != NULL) {
-        json_object_sql = "json_set(json_remove(doc.json_data, '$.content'),"
-                          "'$._id', CAST(doc.id AS TEXT),"
-                          "'$.index', doc.index_id,"
-                          "'$.thumbnail', doc.thumbnail_count,"
-                          "'$.mime', doc.mime,"
-                          "'$.size', doc.size,"
-                          "'$.embedding', (CASE WHEN emb.id IS NOT NULL THEN 1 ELSE 0 END),"
-                          "'$._highlight.name', snippet(search, 0, '<mark>', '</mark>', '', ?6),"
-                          "'$._highlight.content', snippet(search, 1, '<mark>', '</mark>', '', ?6))";
-    } else {
-        json_object_sql = "json_set(json_remove(doc.json_data, '$.content'),"
-                          "'$._id', CAST(doc.id AS TEXT),"
-                          "'$.index', doc.index_id,"
-                          "'$.thumbnail', doc.thumbnail_count,"
-                          "'$.mime', doc.mime,"
-                          "'$.size', doc.size,"
-                          "'$.embedding', (CASE WHEN emb.id IS NOT NULL THEN 1 ELSE 0 END))";
-    }
+    const char *json_object_sql = "json_set(doc.json_data,"
+                                  "'$._id', CAST(doc.id AS TEXT),"
+                                  "'$.index', doc.index_id,"
+                                  "'$.thumbnail', doc.thumbnail_count,"
+                                  "'$.mime', doc.mime,"
+                                  "'$.size', doc.size,"
+                                  "'$.embedding', (CASE WHEN emb.id IS NOT NULL THEN 1 ELSE 0 END))";
 
     char *sql;
-    char *agg_sql;
+    char *agg_sql = NULL;
 
-    if (query_where) {
+    // FTS5 only applies its top-N ranking optimisation to exactly `ORDER BY rank
+    // LIMIT n`. Wrapping rank in round(), or adding the ROWID tiebreaker, makes
+    // SQLite score and sort every match instead: 6.5s versus 0.7s for a term that
+    // hits half of a 517k document index. So the ranking runs in a subquery that
+    // keeps that exact shape, and everything expensive per row — the JSON, the
+    // embedding join, the json — happens for the N rows it returns.
+    const int ranked = (sort == FTS_SORT_SCORE && query_where != NULL && sort_asc);
+
+    if (ranked) {
+        const char *ranked_after = get_ranked_after_where(after);
+        char *ranked_where = build_where_clause(path_where, size_where, date_where, index_id_where,
+                                                mime_where, query_where, ranked_after, tags_where);
+
+        asprintf(
+                &sql,
+                "SELECT"
+                // %!.20g, not %g: SQLite caps %g at 16 significant digits whatever
+                // precision is asked for, and a cursor that does not round-trip
+                // exactly makes the next page repeat or skip rows.
+                " %s, format('%%!.20g', top.rank_var) as sort_var, doc.ROWID"
+                " FROM (SELECT search.ROWID as sid, rank as rank_var"
+                "        FROM search"
+                "        INNER JOIN document_index doc on doc.ROWID = search.ROWID"
+                "        WHERE %s"
+                "        ORDER BY rank"
+                "        LIMIT ?2) top"
+                " INNER JOIN document_index doc on doc.ROWID = top.sid"
+                " LEFT JOIN embedding emb on emb.id = doc.id"
+                " ORDER BY top.rank_var, doc.ROWID",
+                json_object_sql,
+                ranked_where);
+
+        free(ranked_where);
+
+        if (fetch_aggregations) {
+            asprintf(&agg_sql,
+                     "SELECT count(*), sum(size)"
+                     " FROM search"
+                     "  INNER JOIN document_index doc on doc.ROWID = search.ROWID"
+                     " WHERE search MATCH ?1"
+                     " AND %s", agg_where);
+        }
+    } else if (query_where) {
         asprintf(
                 &sql,
                 "SELECT"
@@ -664,14 +949,13 @@ cJSON *database_fts_search(database_t *db, const char *query, const char *path, 
     if (sort == FTS_SORT_RANDOM) {
         sqlite3_bind_int(stmt, 5, seed);
     }
-    if (highlight) {
-        sqlite3_bind_int(stmt, 6, highlight_context_size);
-    }
     if (embedding) {
         sqlite3_bind_int(stmt, 7, embedding_size);
         sqlite3_bind_blob(stmt, 8, embedding, (int) sizeof(float) * embedding_size, SQLITE_STATIC);
         sqlite3_bind_int(stmt, 9, model);
     }
+
+    char **terms = (highlight && query_where != NULL) ? highlight_query_terms(query) : NULL;
 
     cJSON *json = cJSON_CreateObject();
     cJSON *hits_hits = cJSON_CreateArray();
@@ -690,9 +974,8 @@ cJSON *database_fts_search(database_t *db, const char *query, const char *path, 
         const char *json_str = (const char *) sqlite3_column_text(stmt, 0);
         cJSON *row = cJSON_CreateObject();
         cJSON *source = cJSON_Parse(json_str);
-        if (highlight) {
-            cJSON *hl = cJSON_DetachItemFromObject(source, "_highlight");
-            cJSON_AddItemToObject(row, "highlight", hl);
+        if (terms != NULL) {
+            add_highlight(row, source, sqlite3_column_int64(stmt, 2), terms, highlight_context_size);
         }
         cJSON *id = cJSON_DetachItemFromObject(source, "_id");
         cJSON_AddItemToObject(row, "_id", id);
@@ -712,6 +995,7 @@ cJSON *database_fts_search(database_t *db, const char *query, const char *path, 
     } while (TRUE);
 
     sqlite3_finalize(stmt);
+    highlight_free_terms(terms);
 
     cJSON *hits = cJSON_AddObjectToObject(json, "hits");
     cJSON_AddItemToObject(hits, "hits", hits_hits);

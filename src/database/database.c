@@ -9,11 +9,22 @@
 #include <time.h>
 
 
+static void batch_lock(database_t *db);
+
+static void batch_unlock(database_t *db);
+
+static void batch_write_begin(database_t *db);
+
+static void batch_write_end(database_t *db);
+
+static void flush_writes(database_t *db);
+
 database_t *database_create(const char *filename, database_type_t type) {
     database_t *db = calloc(1, sizeof(database_t));
 
     strcpy(db->filename, filename);
     db->type = type;
+    pthread_mutex_init(&db->write_mutex, NULL);
 
     return db;
 }
@@ -139,6 +150,11 @@ void database_open(database_t *db) {
                 "UPDATE marked SET marked=1 WHERE id=(SELECT ROWID FROM document WHERE path=?) AND mtime=? RETURNING id",
                 -1,
                 &db->mark_document_stmt, NULL));
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(
+                db->db,
+                "UPDATE marked SET marked=1 WHERE id=(SELECT ROWID FROM document WHERE path=?) AND mtime=? RETURNING id",
+                -1,
+                &db->mark_walked_document_stmt, NULL));
         CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(
                 db->db,
                 "INSERT INTO document (path, parent, mime, mtime, size, thumbnail_count, json_data, version) "
@@ -327,10 +343,12 @@ static void database_finalize_statements(database_t *db) {
             &db->treemap_merge_up_update_stmt,
             &db->treemap_merge_up_delete_stmt,
             &db->mark_document_stmt,
+            &db->mark_walked_document_stmt,
             &db->mark_written_document_stmt,
             &db->write_document_stmt,
             &db->write_thumbnail_stmt,
             &db->get_document,
+            &db->get_content,
             &db->get_parent_id,
             &db->get_models,
             &db->get_embedding,
@@ -498,39 +516,54 @@ int database_delete_list_iter(database_iterator_t *iter) {
     return 0;
 }
 
-database_iterator_t *database_create_document_iterator(database_t *db) {
+database_iterator_t *database_create_document_iterator(database_t *db, long long min_version) {
 
     sqlite3_stmt *stmt;
 
-    CRASH_IF_NOT_SQLITE_OK(
-            sqlite3_prepare_v2(
-                    db->db,
-                    "WITH doc (id, j) AS ("
-                    "SELECT"
-                    " document.id,"
-                    " json_set(document.json_data,"
-                    "  '$._id', document.id,"
-                    "  '$.index', (SELECT id FROM descriptor),"
-                    "  '$.size', document.size,"
-                    "  '$.mtime', document.mtime,"
-                    "  '$.mime', mim.name,"
-                    "  '$.thumbnail', document.thumbnail_count,"
-                    "  '$.tag', json_group_array(t.tag))"
-                    " FROM document"
-                    "  LEFT JOIN mime mim ON mim.id = document.mime"
-                    "  LEFT JOIN tag t ON t.id = document.id"
-                    " GROUP BY document.id)"
-                    "SELECT CASE"
-                    " WHEN emb.embedding IS NULL THEN j"
-                    " ELSE json_set(j,"
-                    "  '$.emb', json_group_object(m.path, json(emb_to_json(emb.embedding))),"
-                    "  '$.embedding', 1"
-                    "     ) END"
-                    " FROM doc"
-                    " LEFT JOIN embedding emb ON doc.id = emb.id"
-                    " LEFT JOIN model m ON emb.model_id = m.id"
-                    " GROUP BY doc.id",
-                    -1, &stmt, NULL));
+    // Grouping by document id makes a table scan look cheaper than the version index to the query
+    // planner, which is true for a full pass and very wrong for the handful of rows a rescan wrote
+    const char *source = min_version > 0
+                         ? " FROM document INDEXED BY document_version_idx"
+                         : " FROM document";
+
+    if (min_version > 0) {
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
+                db->db, "CREATE INDEX IF NOT EXISTS document_version_idx ON document(version);",
+                NULL, NULL, NULL));
+    }
+
+    char *sql = sqlite3_mprintf(
+            "WITH doc (id, j) AS ("
+            "SELECT"
+            " document.id,"
+            " json_set(document.json_data,"
+            "  '$._id', document.id,"
+            "  '$.index', (SELECT id FROM descriptor),"
+            "  '$.size', document.size,"
+            "  '$.mtime', document.mtime,"
+            "  '$.mime', mim.name,"
+            "  '$.thumbnail', document.thumbnail_count,"
+            "  '$.tag', json_group_array(t.tag))"
+            "%s"
+            "  LEFT JOIN mime mim ON mim.id = document.mime"
+            "  LEFT JOIN tag t ON t.id = document.id"
+            " WHERE document.version > ?"
+            " GROUP BY document.id)"
+            "SELECT CASE"
+            " WHEN emb.embedding IS NULL THEN j"
+            " ELSE json_set(j,"
+            "  '$.emb', json_group_object(m.path, json(emb_to_json(emb.embedding))),"
+            "  '$.embedding', 1"
+            "     ) END"
+            " FROM doc"
+            " LEFT JOIN embedding emb ON doc.id = emb.id"
+            " LEFT JOIN model m ON emb.model_id = m.id"
+            " GROUP BY doc.id", source);
+
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(db->db, sql, -1, &stmt, NULL));
+    sqlite3_free(sql);
+
+    sqlite3_bind_int64(stmt, 1, min_version);
 
     database_iterator_t *iter = malloc(sizeof(database_iterator_t));
 
@@ -638,19 +671,24 @@ void database_incremental_scan_end(database_t *db) {
     ));
 }
 
-int database_mark_document(database_t *db, const char *path, int mtime) {
-    sqlite3_bind_text(db->mark_document_stmt, 1, path, -1, SQLITE_STATIC);
-    sqlite3_bind_int(db->mark_document_stmt, 2, mtime);
+static int mark_document(database_t *db, sqlite3_stmt *stmt, const char *path, int mtime) {
+    batch_lock(db);
+    batch_write_begin(db);
 
-    int ret = sqlite3_step(db->mark_document_stmt);
+    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, mtime);
+
+    int ret = sqlite3_step(stmt);
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(stmt));
+
+    batch_write_end(db);
+    batch_unlock(db);
 
     if (ret == SQLITE_ROW) {
-        CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->mark_document_stmt));
         return TRUE;
     }
 
     if (ret == SQLITE_DONE) {
-        CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->mark_document_stmt));
         return FALSE;
     }
 
@@ -658,9 +696,27 @@ int database_mark_document(database_t *db, const char *path, int mtime) {
     return FALSE;
 }
 
+int database_mark_document(database_t *db, const char *path, int mtime) {
+    return mark_document(db, db->mark_document_stmt, path, mtime);
+}
+
+/** For the walk thread, which decides whether a file is worth sending to a worker at all */
+int database_mark_walked_document(database_t *db, const char *path, int mtime) {
+    return mark_document(db, db->mark_walked_document_stmt, path, mtime);
+}
+
 // In autocommit each row is its own transaction, which creates, commits and unlinks a
 // rollback journal per document while the workers idle behind it.
 #define WRITE_BATCH_SIZE 1000
+
+/** Held across begin/statement/end, so that two threads cannot both open or close the batch */
+static void batch_lock(database_t *db) {
+    pthread_mutex_lock(&db->write_mutex);
+}
+
+static void batch_unlock(database_t *db) {
+    pthread_mutex_unlock(&db->write_mutex);
+}
 
 static void batch_write_begin(database_t *db) {
     if (db->uncommitted_writes == 0) {
@@ -671,21 +727,28 @@ static void batch_write_begin(database_t *db) {
 static void batch_write_end(database_t *db) {
     db->uncommitted_writes += 1;
     if (db->uncommitted_writes >= WRITE_BATCH_SIZE) {
-        database_flush_writes(db);
+        flush_writes(db);
     }
 }
 
 // Must be called before anything that cannot run inside a transaction (VACUUM) or
 // that reads the written rows from another connection.
-void database_flush_writes(database_t *db) {
+static void flush_writes(database_t *db) {
     if (db->uncommitted_writes > 0) {
         CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(db->db, "COMMIT;", NULL, NULL, NULL));
         db->uncommitted_writes = 0;
     }
 }
 
+void database_flush_writes(database_t *db) {
+    batch_lock(db);
+    flush_writes(db);
+    batch_unlock(db);
+}
+
 int database_write_document(database_t *db, document_t *doc, const char *json_data) {
 
+    batch_lock(db);
     batch_write_begin(db);
 
     const char *rel_path = doc->filepath + ScanCtx.index.desc.root_len;
@@ -716,12 +779,14 @@ int database_write_document(database_t *db, document_t *doc, const char *json_da
     CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->mark_written_document_stmt));
 
     batch_write_end(db);
+    batch_unlock(db);
 
     return id;
 }
 
 
 void database_write_thumbnail(database_t *db, int doc_id, int num, void *data, size_t data_size) {
+    batch_lock(db);
     batch_write_begin(db);
 
     sqlite3_bind_int(db->write_thumbnail_stmt, 1, doc_id);
@@ -732,6 +797,7 @@ void database_write_thumbnail(database_t *db, int doc_id, int num, void *data, s
     CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->write_thumbnail_stmt));
 
     batch_write_end(db);
+    batch_unlock(db);
 }
 
 
@@ -792,6 +858,40 @@ int database_get_parent_id(database_t *db, int doc_id) {
 void database_increment_version(database_t *db) {
     CRASH_IF_NOT_SQLITE_OK(sqlite3_exec(
             db->db, "INSERT INTO version DEFAULT VALUES", NULL, NULL, NULL));
+}
+
+/** Extracted text of a document, or NULL when it has none. Caller frees. */
+char *database_get_content(database_t *db, int doc_id) {
+    if (db->get_content == NULL) {
+        CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(
+                db->db, "SELECT json_data ->> 'content' FROM document WHERE id = ?", -1,
+                &db->get_content, NULL));
+    }
+
+    sqlite3_bind_int(db->get_content, 1, doc_id);
+
+    char *content = NULL;
+    if (sqlite3_step(db->get_content) == SQLITE_ROW) {
+        const char *text = (const char *) sqlite3_column_text(db->get_content, 0);
+        if (text != NULL) {
+            content = strdup(text);
+        }
+    }
+
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_reset(db->get_content));
+
+    return content;
+}
+
+long long database_get_version(database_t *db) {
+    sqlite3_stmt *stmt;
+    CRASH_IF_NOT_SQLITE_OK(sqlite3_prepare_v2(db->db, "SELECT max(id) FROM version", -1, &stmt, NULL));
+    CRASH_IF_STMT_FAIL(sqlite3_step(stmt));
+
+    long long version = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+
+    return version;
 }
 
 void database_sync_mime_table(database_t *db) {

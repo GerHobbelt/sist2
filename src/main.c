@@ -204,6 +204,7 @@ void initialize_scan_context(scan_args_t *args) {
     ScanCtx.msdoc_ctx.msdoc_mime = mime_get_mime_by_string("application/msword");
 
     ScanCtx.threads = args->threads;
+    ScanCtx.incremental = args->incremental;
     ScanCtx.depth = args->depth;
     ScanCtx.job_timeout = args->job_timeout;
 
@@ -336,7 +337,15 @@ void sist2_index(index_args_t *args) {
 
     db = database_create(args->index_path, INDEX_DATABASE);
     database_open(db);
-    database_iterator_t *iterator = database_create_document_iterator(db);
+
+    long long source_version = database_get_version(db);
+    long long indexed_version = IndexCtx.needs_es_connection ? elastic_get_indexed_version(desc->id) : 0;
+
+    if (indexed_version > 0) {
+        LOG_INFOF("main.c", "Pushing the documents written since version %lld", indexed_version);
+    }
+
+    database_iterator_t *iterator = database_create_document_iterator(db, indexed_version);
     database_document_iter_foreach(json, iterator) {
         char sid[SIST_SID_LEN];
         int doc_id = cJSON_GetObjectItem(json, "_id")->valueint;
@@ -372,6 +381,14 @@ void sist2_index(index_args_t *args) {
 
     if (IndexCtx.needs_es_connection) {
         finish_indexer(desc->id);
+
+        // Saving the version would make the next run skip the documents this one failed to push
+        if (IndexCtx.dropped == 0) {
+            elastic_set_indexed_version(desc->id, source_version);
+        } else {
+            LOG_WARNINGF("main.c", "%d documents did not make it in, the next run will push them again",
+                         IndexCtx.dropped);
+        }
     }
     free(desc);
 }
@@ -385,8 +402,11 @@ void sist2_sqlite_index(sqlite_index_args_t *args) {
 
     database_fts_attach(db, args->search_index_path);
 
-    database_fts_index(db);
-    database_fts_optimize(db);
+    database_fts_index(db, args->rebuild);
+
+    if (args->optimize) {
+        database_fts_optimize(db);
+    }
 
     database_close(db, FALSE);
 }
@@ -568,6 +588,10 @@ int main(int argc, const char *argv[]) {
             OPT_GROUP("sqlite-index options"),
             OPT_STRING(0, "search-index", &common_search_index,
                        "Path to search index. Will be created if it does not exist yet."),
+            OPT_BOOLEAN(0, "rebuild", &sqlite_index_args->rebuild,
+                        "Rebuild the whole search index instead of only applying the changes since the last run."),
+            OPT_BOOLEAN(0, "optimize", &sqlite_index_args->optimize,
+                        "Merge the search index into a single b-tree when done. Slow, and rarely worth it."),
 
             OPT_GROUP("Web options"),
             OPT_STRING(0, "es-url", &common_es_url, "Elasticsearch url. DEFAULT: http://localhost:9200"),

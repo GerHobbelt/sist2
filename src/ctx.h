@@ -33,6 +33,7 @@ typedef struct {
     const char **argv;
 
     int threads;
+    int incremental;
     int depth;
     /** Seconds a worker may spend on one file before it is killed and restarted, 0 to disable */
     int job_timeout;
@@ -75,6 +76,8 @@ typedef struct {
      * Set to false when using --print
      */
     int needs_es_connection;
+    /** Documents Elasticsearch did not take, summed across the indexing threads */
+    int dropped;
 } IndexCtx_t;
 
 typedef struct {

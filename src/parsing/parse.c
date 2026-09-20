@@ -100,7 +100,7 @@ int get_mime(parse_job_t *job) {
         return 0;
     }
 
-    char *buf[MAGIC_BUF_SIZE];
+    char buf[MAGIC_BUF_SIZE];
     int bytes_read = job->vfile.read_rewindable(&job->vfile, buf, MAGIC_BUF_SIZE);
     if (bytes_read < 0) {
         if (job->vfile.is_fs_file) {
@@ -155,18 +155,22 @@ void parse(parse_job_t *job) {
     doc->meta_tail = NULL;
     doc->size = job->vfile.st_size;
     doc->mtime = MAX(job->vfile.mtime, 0);
-    doc->mime = get_mime(job);
     doc->thumbnail_count = 0;
     strcpy(doc->parent, job->parent);
 
-    if (doc->mime == (unsigned int) GET_MIME_ERROR_FATAL) {
+    // Before anything opens the file. Detecting the media type of a file with no usable extension
+    // reads the first 24kB of it and runs libmagic over them, which is wasted on a document that
+    // is already indexed, and costs the document its place in the index when the read fails.
+    int document_exists = sink_mark_document(doc->filepath + ScanCtx.index.desc.root_len, doc->mtime);
+    if (document_exists) {
         CLOSE_FILE(job->vfile)
         free(doc);
         return;
     }
 
-    int document_exists = sink_mark_document(doc->filepath + ScanCtx.index.desc.root_len, doc->mtime);
-    if (document_exists) {
+    doc->mime = get_mime(job);
+
+    if (doc->mime == (unsigned int) GET_MIME_ERROR_FATAL) {
         CLOSE_FILE(job->vfile)
         free(doc);
         return;
