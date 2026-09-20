@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <gmock/gmock.h>
 
 #include <filesystem>
 #include <string>
@@ -64,6 +65,37 @@ protected:
         return doc;
     }
 };
+
+/** What SQLite would use for its temporary files, the way database.c looks it up */
+static const char *temp_directory() {
+    const char *directory = getenv("SQLITE_TMPDIR");
+    if (directory == nullptr) {
+        directory = getenv("TMPDIR");
+    }
+    return directory == nullptr ? "/tmp" : directory;
+}
+
+/**
+ * A full disk is the one SQLite error a user can act on, but only if the message says which file
+ * ran out of room: the index, the search index and the temporary files are often on three
+ * different filesystems.
+ */
+TEST_F(DatabaseTest, AFullDiskErrorNamesTheFilesAndTheirFreeSpace) {
+    ASSERT_DEATH(database_fatal_sqlite_error(db, "test.c", 1, SQLITE_FULL),
+                 ::testing::AllOf(
+                         ::testing::HasSubstr("index database"),
+                         ::testing::HasSubstr("MiB free"),
+                         ::testing::HasSubstr("temporary file folder (" + std::string(temp_directory()) + ")"),
+                         ::testing::HasSubstr("(13) database or disk is full")));
+}
+
+/** Every other error is reported as it always was */
+TEST_F(DatabaseTest, AnOrdinarySqliteErrorIsReportedWithoutDiskDetails) {
+    ASSERT_DEATH(database_fatal_sqlite_error(db, "test.c", 1, SQLITE_ERROR),
+                 ::testing::AllOf(
+                         ::testing::HasSubstr("Sqlite error @ test.c:1"),
+                         ::testing::Not(::testing::HasSubstr("MiB free"))));
+}
 
 TEST_F(DatabaseTest, IndexDescriptorRoundTrip) {
     index_descriptor_t desc = {};

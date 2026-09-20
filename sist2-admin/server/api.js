@@ -12,6 +12,7 @@ import {
     taskHistoryRepository,
     userScriptRepository
 } from "./db.js";
+import { esUrlPort, parseEsUrl } from "./es_url.js";
 import { HttpError, RESPONSE_HANDLED, Router, openSse } from "./http.js";
 import { logger } from "./log.js";
 import {
@@ -35,6 +36,7 @@ import { SCRIPT_TEMPLATES, createScriptFromTemplate, deleteScriptDir, renameScri
 import {
     UserScriptTask,
     deleteTaskLogs,
+    jobProblem,
     submitJob,
     taskLogFile,
     taskQueue
@@ -105,10 +107,9 @@ function withRunning(frontend) {
 
 function pingEs(esUrl, insecure) {
     return new Promise((resolve) => {
-        let url;
-        try {
-            url = new URL(esUrl);
-        } catch (e) {
+        const url = parseEsUrl(esUrl);
+
+        if (url === null) {
             resolve({
                 ok: false,
                 message: "Invalid URL"
@@ -180,7 +181,7 @@ function pingEs(esUrl, insecure) {
             }
             resolve({
                 ok: false,
-                message: "Connection refused"
+                message: `Could not connect to ${url.hostname}:${esUrlPort(url)}`
             });
         });
     });
@@ -208,6 +209,8 @@ export function createRouter() {
             throw new HttpError(409, "job already exists");
         }
         const job = createDefaultJob(params.name);
+        // The same backend a new frontend gets: a job with none cannot be indexed
+        job.index_options.search_backend = defaultSearchBackendName();
         jobRepository.insert(job);
         return job;
     });
@@ -247,6 +250,11 @@ export function createRouter() {
 
     router.post("/api/job/:name/run", ({ params, query }) => {
         const job = getJobOr404(params.name);
+
+        const problem = jobProblem(job);
+        if (problem !== null) {
+            throw new HttpError(400, problem);
+        }
 
         if (query.get("full") === "true") {
             job.do_full_scan = true;

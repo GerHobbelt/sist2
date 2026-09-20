@@ -80,6 +80,33 @@ char *get_meta_key_text(enum metakey meta_key) {
     }
 }
 
+/**
+ * A parser can produce the same field twice - text from more than one place in a media file, say -
+ * and a JSON object with the field twice is rejected outright by Elasticsearch. Text is worth
+ * keeping, so it is appended; anything else keeps what was found first.
+ */
+static void add_string_meta(cJSON *json, meta_line_t *meta) {
+
+    const char *key = get_meta_key_text(meta->key);
+    cJSON *existing = cJSON_GetObjectItem(json, key);
+
+    if (existing == NULL) {
+        cJSON_AddStringToObject(json, key, meta->str_val);
+        return;
+    }
+
+    if (meta->key != MetaContent) {
+        return;
+    }
+
+    const char *text = cJSON_GetStringValue(existing);
+    char *merged = malloc(strlen(text) + strlen(meta->str_val) + 2);
+    sprintf(merged, "%s\n%s", text, meta->str_val);
+
+    cJSON_ReplaceItemInObject(json, key, cJSON_CreateString(merged));
+    free(merged);
+}
+
 typedef struct {
     meta_line_t *meta_head;
     meta_line_t *meta_tail;
@@ -98,6 +125,10 @@ void write_document(document_t *doc) {
     char filepath[PATH_MAX * 3];
     strcpy(filepath, doc->filepath + ScanCtx.index.desc.root_len);
 
+    // Sized before the truncations below, so it covers both the name and the path
+    const size_t filepath_escaped_size = str_escape_size(filepath);
+    char *filepath_escaped = malloc(filepath_escaped_size);
+
     cJSON_AddStringToObject(json, "extension", filepath + doc->ext);
 
     // Remove extension
@@ -107,19 +138,20 @@ void write_document(document_t *doc) {
         *(filepath + doc->ext) = '\0';
     }
 
-    char filepath_escaped[PATH_MAX * 3];
-    str_escape(filepath_escaped, filepath + doc->base);
+    str_escape(filepath_escaped, filepath_escaped_size, filepath + doc->base);
 
     cJSON_AddStringToObject(json, "name", filepath_escaped);
 
     if (doc->base > 0) {
         *(filepath + doc->base - 1) = '\0';
 
-        str_escape(filepath_escaped, filepath);
+        str_escape(filepath_escaped, filepath_escaped_size, filepath);
         cJSON_AddStringToObject(json, "path", filepath_escaped);
     } else {
         cJSON_AddStringToObject(json, "path", "");
     }
+
+    free(filepath_escaped);
 
     // Metadata
     meta_line_t *meta = doc->meta_head;
@@ -164,7 +196,7 @@ void write_document(document_t *doc) {
             case MetaChecksum:
             case MetaMediaComment:
             case MetaTitle: {
-                cJSON_AddStringToObject(json, get_meta_key_text(meta->key), meta->str_val);
+                add_string_meta(json, meta);
                 buffer_size_guess += (int) strlen(meta->str_val);
                 break;
             }

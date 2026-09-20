@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 
+import { waitForChildExit } from "./child.js";
 import { DATA_FOLDER, LOG_FOLDER, SIST2_BINARY } from "./config.js";
 import { jobRepository, searchBackendRepository, taskHistoryRepository } from "./db.js";
 import { logger } from "./log.js";
@@ -293,7 +294,13 @@ export class UserScriptTask extends Task {
                 this.log({ "sist2-admin": `Failed to start user script: ${e.message}` });
                 resolve(SKIPPED_RETURN_CODE);
             });
-            child.on("close", (code) => {
+            waitForChildExit(child).then(({ code, orphaned }) => {
+                if (orphaned) {
+                    this.log({
+                        "sist2-admin": "The user script has exited, but something it started is still "
+                            + "running and holding on to its output."
+                    });
+                }
                 if (code === null) {
                     resolve(SKIPPED_RETURN_CODE);
                     return;
@@ -438,6 +445,33 @@ export function deleteTaskLogs(taskId) {
 }
 
 export const taskQueue = new TaskQueue();
+
+/**
+ * Why this job cannot run, or null when it can. Both of these are found when the tasks are already
+ * under way otherwise: an empty path scans everything, and a backend that is not there fails the
+ * index task once the scan has finished.
+ *
+ * @returns {string|null}
+ */
+export function jobProblem(job) {
+    const scanPath = job.scan_options.path;
+
+    if (scanPath === null || scanPath === undefined || scanPath.trim() === "") {
+        return "This job has no path to scan. Set one in the job's options.";
+    }
+
+    const name = job.index_options.search_backend;
+
+    if (name === null || name === undefined) {
+        return "This job has no search backend. Pick one in the job's options.";
+    }
+
+    if (searchBackendRepository.get(name) === null) {
+        return `This job's search backend no longer exists: ${name}`;
+    }
+
+    return null;
+}
 
 export function submitJob(job, userScriptsByName) {
     if (job.status === "created") {
